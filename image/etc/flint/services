@@ -1,0 +1,10 @@
+# Flint services, supervised by flint-init.
+#
+#   name   mode      tty         command [args...]
+#
+# mode:  respawn = restart when it exits (with backoff if it keeps failing fast)
+#        once    = run once, never restart
+# tty:   '-' to inherit the console, or a /dev path to become the controlling tty
+# No shell and no quoting: fields are split on whitespace.
+tty1    respawn   /dev/tty1   /sbin/flint-login
+tty2    respawn   /dev/tty2   /sbin/flint-login

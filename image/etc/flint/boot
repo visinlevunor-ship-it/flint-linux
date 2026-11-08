@@ -1,0 +1,4 @@
+# Boot tasks: one command per line, run in order (each waited for, 30 s limit)
+# before services start. No shell and no quoting.
+#
+# /sbin/flint-modload

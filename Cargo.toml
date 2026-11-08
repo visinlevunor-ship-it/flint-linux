@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/flint-core",
+    "crates/flint-init",
+    "crates/flint-power",
+    "crates/flint-version",
+]
+
+[workspace.package]
+version = "0.1.0"   # Cargo's own number; the distro version lives in ./VERSION
+edition = "2021"
+rust-version = "1.75"
+
+[workspace.dependencies]
+libc = "0.2"
+flint-core = { path = "crates/flint-core" }
+
+# Size matters for a tiny distro. panic stays "unwind" on purpose: flint-init
+# catches panics in its supervisor loop, because PID 1 dying means a kernel panic.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

@@ -1,0 +1,9 @@
+[package]
+name = "flint-init"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+flint-core.workspace = true
+libc.workspace = true
