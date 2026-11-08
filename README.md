@@ -11,8 +11,8 @@ Version lives in `VERSION` (`MAJOR.MINOR`). A rewrite of a component or a major 
 | `flint-core` | shared: version, power actions, syscall wrappers, logging | done |
 | `flint-rt` (`rt/`) | libc replacement: syscalls, `_start`, allocator, `mem*`, panic, stdio (no_std, x86_64 Linux) | foundation done, tested in QEMU |
 | `flint-version` (`rt/`) | prints `Flint Linux 0.2 (abc1234)`; first program on flint-rt, no libc | done |
-| `flint-init` | PID 1: early mounts, boot tasks, service supervision, clean shutdown | written, needs boot test |
-| `flint-power` | `poweroff` / `reboot` / `halt` (signals init, or `-f` for direct) | written, needs boot test |
+| `flint-init` | PID 1: early mounts, boot tasks, service supervision, clean shutdown | Done, Works |
+| `flint-power` | `poweroff` / `reboot` / `halt` (signals init, or `-f` for direct) | Done, Works |
 | `flint-login` | getty + login replacement | planned |
 | `flint-sh` | shell | planned |
 | `flint-modload` | loads modules from `/sys/**/modalias` | planned |
