@@ -9,12 +9,22 @@ pub const NUMBER: &str = env!("FLINT_VERSION");
 /// Short git hash, `$FLINT_BUILD_ID`, or "nogit".
 pub const BUILD: &str = env!("FLINT_BUILD");
 
-/// e.g. `Flint Linux 0.1 (a1b2c3d)`
-pub fn long() -> String {
-    format!("{NAME} {NUMBER} ({BUILD})")
+/// Displays as e.g. `Flint Linux 0.1 (a1b2c3d)`. Works without std or alloc.
+pub struct Long;
+
+impl core::fmt::Display for Long {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{NAME} {NUMBER} ({BUILD})")
+    }
 }
 
-#[cfg(test)]
+/// e.g. `Flint Linux 0.1 (a1b2c3d)`
+#[cfg(feature = "std")]
+pub fn long() -> String {
+    Long.to_string()
+}
+
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
 

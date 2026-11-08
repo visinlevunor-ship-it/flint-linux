@@ -5,5 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 build = "build.rs"
 
+[features]
+default = ["std"]
+# Everything except `version` needs std + libc. flint-rt based programs turn this off.
+std = ["dep:libc"]
+
 [dependencies]
-libc.workspace = true
+libc = { workspace = true, optional = true }

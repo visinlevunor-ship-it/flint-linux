@@ -1,0 +1,12 @@
+[package]
+name = "flint-rt"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Flint's libc replacement: raw Linux syscalls, entry point, allocator, memcpy & co. for no_std programs"
+
+[lib]
+# Not testable with the std test harness (it defines _start, memcpy, the allocator).
+# Verification is `flint-version --rt-selftest` run as a real program.
+test = false
+doctest = false

@@ -1,3 +1,4 @@
-/target
+target/
 *.iso
 *.img
+*.cpio.gz

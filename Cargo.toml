@@ -1,10 +1,11 @@
 [workspace]
 resolver = "2"
+# rt/ is a separate workspace: no_std programs need panic=abort and their own link flags.
+exclude = ["rt"]
 members = [
     "crates/flint-core",
     "crates/flint-init",
     "crates/flint-power",
-    "crates/flint-version",
 ]
 
 [workspace.package]

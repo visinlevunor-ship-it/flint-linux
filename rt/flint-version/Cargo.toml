@@ -1,0 +1,15 @@
+[package]
+name = "flint-version"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+build = "build.rs"
+
+[dependencies]
+flint-rt = { path = "../flint-rt" }
+flint-core = { path = "../../crates/flint-core", default-features = false }
+
+[[bin]]
+name = "flint-version"
+path = "src/main.rs"
+test = false

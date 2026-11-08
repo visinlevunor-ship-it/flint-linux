@@ -9,9 +9,10 @@ use std::process::ExitCode;
 
 use flint_core::{sys, PowerAction};
 
-const USAGE: &str = "usage: flint-power [-f] <poweroff|reboot|halt>\n\
-  (or run through a symlink named poweroff, reboot or halt)\n\
-  -f, --force   sync and tell the kernel directly, without involving init\n";
+const USAGE: &str = r"usage: flint-power [-f] <poweroff|reboot|halt>
+  (or run through a symlink named poweroff, reboot or halt)
+  -f, --force   sync and tell the kernel directly, without involving init
+";
 
 #[derive(Debug, PartialEq, Eq)]
 struct Request {

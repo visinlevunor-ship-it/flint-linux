@@ -1,0 +1,18 @@
+# Flint's libc-free programs: no std, no libc, no musl. Built on flint-rt.
+# A separate workspace because these need panic=abort and bare link flags,
+# which would break the std crates in the main workspace.
+[workspace]
+resolver = "2"
+members = ["flint-rt", "flint-version"]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+# LTO is off on purpose: flint-rt is #![no_builtins], and rustc cannot link a
+# no_builtins crate against LTO-internalised core/alloc symbols.
+lto = false
+codegen-units = 1
+strip = true
