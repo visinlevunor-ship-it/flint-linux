@@ -1,0 +1,3 @@
+# Boot tasks for the QEMU test image: create the flint user's home directory.
+/bin/mkdir -p /home/flint
+/bin/chown 1000:1000 /home/flint

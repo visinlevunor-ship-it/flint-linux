@@ -1,0 +1,3 @@
+# Like services.qemu but skips login: a root shell straight on the serial console.
+#   name     mode     tty          command
+console    respawn  /dev/ttyS0  /bin/sh

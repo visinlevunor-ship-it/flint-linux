@@ -11,6 +11,8 @@ pub mod log;
 pub mod power;
 #[cfg(feature = "std")]
 pub mod sys;
+#[cfg(feature = "std")]
+pub mod tty;
 pub mod version;
 
 #[cfg(feature = "std")]

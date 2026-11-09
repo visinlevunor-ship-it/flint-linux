@@ -4,12 +4,15 @@
 #   BUSYBOX=/path/to/static-busybox image/build-initramfs.sh [output.cpio.gz]
 #
 # Environment:
-#   BUSYBOX   (required) static Linux x86_64 busybox, used as the stopgap shell/tools
+#   BUSYBOX   (required) static Linux x86_64 busybox: stopgap for sh and the few tools
+#             flint-box does not have yet
 #   TARGET    cargo target the binaries were built for   (default x86_64-unknown-linux-musl)
 #   PROFILE   cargo profile directory                    (default release)
-#   BINDIR    built std binaries: flint-init, flint-power  (default target/$TARGET/$PROFILE)
+#   BINDIR    built std binaries: flint-init, flint-power, flint-login, flint-passwd, flint-box
+#                                                          (default target/$TARGET/$PROFILE)
 #   RTBINDIR  built flint-rt binaries: flint-version       (default rt/target/$TARGET/$PROFILE)
 #   SERVICES  services file to install                   (default image/etc/flint/services.qemu)
+#   BOOT      boot tasks file to install                 (default image/etc/flint/boot.qemu)
 #   OVERLAY   directory copied over the finished rootfs  (optional, for test files)
 #
 # POSIX sh only: runs on FreeBSD and Linux hosts.
@@ -21,10 +24,11 @@ PROFILE=${PROFILE:-release}
 BINDIR=${BINDIR:-$ROOT/target/$TARGET/$PROFILE}
 RTBINDIR=${RTBINDIR:-$ROOT/rt/target/$TARGET/$PROFILE}
 SERVICES=${SERVICES:-$ROOT/image/etc/flint/services.qemu}
+BOOT=${BOOT:-$ROOT/image/etc/flint/boot.qemu}
 OUT=${1:-$ROOT/target/flint-initramfs.cpio.gz}
 : "${BUSYBOX:?set BUSYBOX to a static Linux x86_64 busybox binary}"
 
-for f in flint-init flint-power; do
+for f in flint-init flint-power flint-login flint-passwd flint-box; do
     [ -x "$BINDIR/$f" ] || { echo "missing $BINDIR/$f (build first, or set BINDIR/TARGET)" >&2; exit 1; }
 done
 [ -x "$RTBINDIR/flint-version" ] || { echo "missing $RTBINDIR/flint-version (cd rt && cargo build --release ...)" >&2; exit 1; }
@@ -32,9 +36,11 @@ done
 
 RFS=$(mktemp -d "${TMPDIR:-/tmp}/flint-rootfs.XXXXXX")
 trap 'rm -rf "$RFS"' EXIT
+# mktemp -d makes the directory 0700, and the archive would make / unreadable to non-root users.
+chmod 755 "$RFS"
 
 mkdir -p "$RFS/bin" "$RFS/sbin" "$RFS/etc/flint" "$RFS/dev" "$RFS/proc" "$RFS/sys" \
-         "$RFS/run" "$RFS/tmp" "$RFS/root" "$RFS/usr/bin" "$RFS/usr/sbin"
+         "$RFS/run" "$RFS/tmp" "$RFS/root" "$RFS/home" "$RFS/usr/bin" "$RFS/usr/sbin"
 chmod 1777 "$RFS/tmp"
 chmod 700 "$RFS/root"
 
@@ -42,20 +48,35 @@ chmod 700 "$RFS/root"
 cp "$BINDIR/flint-init" "$RFS/init"
 cp "$BINDIR/flint-init" "$RFS/sbin/flint-init"
 cp "$BINDIR/flint-power" "$RFS/sbin/flint-power"
+cp "$BINDIR/flint-login" "$RFS/sbin/flint-login"
+cp "$BINDIR/flint-box" "$RFS/bin/flint-box"
+# passwd must be setuid root. Never set that bit on flint-box: it would run every applet as root.
+cp "$BINDIR/flint-passwd" "$RFS/bin/passwd"
+chmod 4755 "$RFS/bin/passwd"
 cp "$RTBINDIR/flint-version" "$RFS/bin/flint-version"
 for a in poweroff reboot halt; do ln -s flint-power "$RFS/sbin/$a"; done
 
-# Stopgap tools until Flint has its own: busybox plus applet symlinks.
+# flint-box applets: one symlink per name in crates/flint-box/applets.txt.
+while read -r a; do
+    [ -n "$a" ] && ln -s flint-box "$RFS/bin/$a"
+done < "$ROOT/crates/flint-box/applets.txt"
+
+# Stopgap: busybox for the shell and whatever flint-box does not provide yet.
 cp "$BUSYBOX" "$RFS/bin/busybox"
 chmod 755 "$RFS/bin/busybox"
-for a in sh ls cat echo mkdir rm cp mv ln mount umount ps dmesg sleep kill uname hostname \
-         grep head tail wc date false true id env chmod chown touch df free; do
-    ln -s busybox "$RFS/bin/$a"
+for a in sh dmesg free date grep sed awk find sort uniq tr cut xargs less vi tee basename dirname \
+         which readlink stat df du mknod mkfifo insmod rmmod lsmod modprobe ifconfig ip ping; do
+    [ -e "$RFS/bin/$a" ] || [ -h "$RFS/bin/$a" ] || ln -s busybox "$RFS/bin/$a"
 done
 
-cp "$ROOT/image/etc/flint/boot" "$RFS/etc/flint/boot"
+cp "$BOOT" "$RFS/etc/flint/boot"
 cp "$SERVICES" "$RFS/etc/flint/services"
 echo "flint" > "$RFS/etc/hostname"
+for f in passwd group shadow motd; do
+    cp "$ROOT/image/etc/$f" "$RFS/etc/$f"
+done
+chmod 644 "$RFS/etc/passwd" "$RFS/etc/group" "$RFS/etc/motd"
+chmod 600 "$RFS/etc/shadow"
 
 if [ -n "${OVERLAY:-}" ]; then
     cp -R "$OVERLAY"/. "$RFS"/

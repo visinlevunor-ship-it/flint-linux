@@ -9,8 +9,10 @@ use alloc::vec::Vec;
 
 use crate::{println, sys};
 
+#[allow(dead_code)] // only its address and alignment are checked
 #[repr(align(64))]
 struct Aligned64([u8; 64]);
+#[allow(dead_code)]
 #[repr(align(4096))]
 struct Aligned4096([u8; 16]);
 

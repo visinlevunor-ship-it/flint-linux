@@ -1,3 +1,3 @@
-# Services for booting under QEMU with a serial console (-nographic).
+# Services for booting under QEMU with a serial console (-nographic): a login prompt.
 #   name     mode     tty          command
-console    respawn  /dev/ttyS0  /bin/sh
+console    respawn  /dev/ttyS0  /sbin/flint-login

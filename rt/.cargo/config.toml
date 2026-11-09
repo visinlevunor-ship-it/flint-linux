@@ -1,0 +1,4 @@
+# flint-rt programs bring their own _start, so rustc must not add musl's C startup files.
+# (Cargo adds this to the rustflags in ../.cargo/config.toml.)
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "link-self-contained=no"]

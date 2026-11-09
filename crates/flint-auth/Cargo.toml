@@ -1,0 +1,8 @@
+[package]
+name = "flint-auth"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Flint account handling: SHA-256, PBKDF2 password hashes, passwd/shadow/group parsing. Pure Rust, no libc."
+
+[dependencies]

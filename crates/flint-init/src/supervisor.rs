@@ -43,7 +43,7 @@ pub fn wait_signal(set: Option<&sigset_t>, timeout: Duration) -> Option<c_int> {
         return None;
     };
     let ts = libc::timespec {
-        tv_sec: timeout.as_secs() as libc::time_t,
+        tv_sec: timeout.as_secs() as _, // time_t is 32 or 64 bits depending on the libc
         tv_nsec: timeout.subsec_nanos() as _,
     };
     // SAFETY: `set` and `ts` are valid; `info` is plain zeroed memory the kernel fills in.

@@ -3,6 +3,19 @@
 version = 3
 
 [[package]]
+name = "flint-auth"
+version = "0.1.0"
+
+[[package]]
+name = "flint-box"
+version = "0.1.0"
+dependencies = [
+ "flint-auth",
+ "flint-core",
+ "libc",
+]
+
+[[package]]
 name = "flint-core"
 version = "0.1.0"
 dependencies = [
@@ -13,6 +26,24 @@ dependencies = [
 name = "flint-init"
 version = "0.1.0"
 dependencies = [
+ "flint-core",
+ "libc",
+]
+
+[[package]]
+name = "flint-login"
+version = "0.1.0"
+dependencies = [
+ "flint-auth",
+ "flint-core",
+ "libc",
+]
+
+[[package]]
+name = "flint-passwd"
+version = "0.1.0"
+dependencies = [
+ "flint-auth",
  "flint-core",
  "libc",
 ]

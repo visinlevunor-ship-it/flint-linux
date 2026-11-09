@@ -1,0 +1,3 @@
+Welcome to Flint Linux.
+This is a development image: root and flint both use the password "flint". Run passwd to change it.
+

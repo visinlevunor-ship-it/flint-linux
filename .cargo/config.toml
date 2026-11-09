@@ -1,0 +1,5 @@
+# FreeBSD's cc (used as the linker when cross-compiling) ignores -static-pie and would
+# produce a *dynamic* binary asking for FreeBSD's loader, which Linux cannot run.
+# A plain static link avoids that.
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "relocation-model=static"]
