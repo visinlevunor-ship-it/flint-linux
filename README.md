@@ -80,9 +80,4 @@ VERSION                the distro version
 
 ## License
 
-None chosen yet.
-
-# pls note gng
-
-i didnt commit cuz i dont think its finished and its buggy like half of the time
-i dont wanna ship an unfinished thing
+Mit License
