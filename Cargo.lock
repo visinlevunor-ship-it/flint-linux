@@ -57,6 +57,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "flint-sh"
+version = "0.1.0"
+dependencies = [
+ "flint-auth",
+ "flint-core",
+ "libc",
+]
+
+[[package]]
+name = "flint-su"
+version = "0.1.0"
+dependencies = [
+ "flint-auth",
+ "flint-core",
+ "libc",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"

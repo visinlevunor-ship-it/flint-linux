@@ -9,7 +9,10 @@ members = [
     "crates/flint-init",
     "crates/flint-login",
     "crates/flint-passwd",
+    "crates/flint-sh",
+    "crates/flint-su",
     "crates/flint-power",
+    "crates/flint-su",
 ]
 
 [workspace.package]

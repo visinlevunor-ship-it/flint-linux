@@ -268,6 +268,12 @@ fn uname_id_whoami_hostname() {
     let id = run(&["id"]);
     assert!(id.stdout.starts_with("uid=") && id.stdout.contains(" gid="), "{}", id.stdout);
     assert!(!run(&["whoami"]).stdout.trim().is_empty());
+    let uid = run(&["id", "-u"]).stdout;
+    assert!(uid.trim().parse::<u32>().is_ok(), "id -u: {uid:?}");
+    assert!(run(&["id", "-g"]).stdout.trim().parse::<u32>().is_ok());
+    assert_eq!(run(&["id", "-un"]).stdout, run(&["whoami"]).stdout, "id -un matches whoami");
+    assert!(run(&["id", "-G"]).stdout.split_whitespace().all(|g| g.parse::<u32>().is_ok()));
+    assert!(run(&["id", "-q"]).code != 0);
     assert!(!run(&["hostname"]).stdout.trim().is_empty());
     assert_eq!(run(&["uname", "-z"]).code, 1);
 }

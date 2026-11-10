@@ -1,0 +1,11 @@
+[package]
+name = "flint-su"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "su for Flint. Installed setuid root (like flint-passwd; never flint-box)."
+
+[dependencies]
+flint-core.workspace = true
+flint-auth = { path = "../flint-auth" }
+libc.workspace = true

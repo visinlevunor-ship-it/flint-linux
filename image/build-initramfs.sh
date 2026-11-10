@@ -4,11 +4,12 @@
 #   BUSYBOX=/path/to/static-busybox image/build-initramfs.sh [output.cpio.gz]
 #
 # Environment:
-#   BUSYBOX   (required) static Linux x86_64 busybox: stopgap for sh and the few tools
-#             flint-box does not have yet
+#   BUSYBOX   (required) static Linux x86_64 busybox: stopgap for the few tools flint-box
+#             does not have yet (grep, sed, date, ...)
 #   TARGET    cargo target the binaries were built for   (default x86_64-unknown-linux-musl)
 #   PROFILE   cargo profile directory                    (default release)
-#   BINDIR    built std binaries: flint-init, flint-power, flint-login, flint-passwd, flint-box
+#   BINDIR    built std binaries: flint-init, flint-power, flint-login, flint-passwd, flint-su,
+#             flint-sh, flint-box
 #                                                          (default target/$TARGET/$PROFILE)
 #   RTBINDIR  built flint-rt binaries: flint-version       (default rt/target/$TARGET/$PROFILE)
 #   SERVICES  services file to install                   (default image/etc/flint/services.qemu)
@@ -28,7 +29,7 @@ BOOT=${BOOT:-$ROOT/image/etc/flint/boot.qemu}
 OUT=${1:-$ROOT/target/flint-initramfs.cpio.gz}
 : "${BUSYBOX:?set BUSYBOX to a static Linux x86_64 busybox binary}"
 
-for f in flint-init flint-power flint-login flint-passwd flint-box; do
+for f in flint-init flint-power flint-login flint-passwd flint-su flint-sh flint-box; do
     [ -x "$BINDIR/$f" ] || { echo "missing $BINDIR/$f (build first, or set BINDIR/TARGET)" >&2; exit 1; }
 done
 [ -x "$RTBINDIR/flint-version" ] || { echo "missing $RTBINDIR/flint-version (cd rt && cargo build --release ...)" >&2; exit 1; }
@@ -50,9 +51,13 @@ cp "$BINDIR/flint-init" "$RFS/sbin/flint-init"
 cp "$BINDIR/flint-power" "$RFS/sbin/flint-power"
 cp "$BINDIR/flint-login" "$RFS/sbin/flint-login"
 cp "$BINDIR/flint-box" "$RFS/bin/flint-box"
-# passwd must be setuid root. Never set that bit on flint-box: it would run every applet as root.
+# passwd and su must be setuid root. Never set that bit on flint-box: it would run every
+# applet as root.
 cp "$BINDIR/flint-passwd" "$RFS/bin/passwd"
-chmod 4755 "$RFS/bin/passwd"
+cp "$BINDIR/flint-su" "$RFS/bin/su"
+chmod 4755 "$RFS/bin/passwd" "$RFS/bin/su"
+cp "$BINDIR/flint-sh" "$RFS/bin/flint-sh"
+ln -s flint-sh "$RFS/bin/sh"
 cp "$RTBINDIR/flint-version" "$RFS/bin/flint-version"
 for a in poweroff reboot halt; do ln -s flint-power "$RFS/sbin/$a"; done
 
@@ -61,10 +66,10 @@ while read -r a; do
     [ -n "$a" ] && ln -s flint-box "$RFS/bin/$a"
 done < "$ROOT/crates/flint-box/applets.txt"
 
-# Stopgap: busybox for the shell and whatever flint-box does not provide yet.
+# Stopgap: busybox for whatever flint-box does not provide yet.
 cp "$BUSYBOX" "$RFS/bin/busybox"
 chmod 755 "$RFS/bin/busybox"
-for a in sh dmesg free date grep sed awk find sort uniq tr cut xargs less vi tee basename dirname \
+for a in dmesg free date grep sed awk find sort uniq tr cut xargs less vi tee basename dirname \
          which readlink stat df du mknod mkfifo insmod rmmod lsmod modprobe ifconfig ip ping; do
     [ -e "$RFS/bin/$a" ] || [ -h "$RFS/bin/$a" ] || ln -s busybox "$RFS/bin/$a"
 done
@@ -72,10 +77,10 @@ done
 cp "$BOOT" "$RFS/etc/flint/boot"
 cp "$SERVICES" "$RFS/etc/flint/services"
 echo "flint" > "$RFS/etc/hostname"
-for f in passwd group shadow motd; do
+for f in passwd group shadow motd shells; do
     cp "$ROOT/image/etc/$f" "$RFS/etc/$f"
 done
-chmod 644 "$RFS/etc/passwd" "$RFS/etc/group" "$RFS/etc/motd"
+chmod 644 "$RFS/etc/passwd" "$RFS/etc/group" "$RFS/etc/motd" "$RFS/etc/shells"
 chmod 600 "$RFS/etc/shadow"
 
 if [ -n "${OVERLAY:-}" ]; then

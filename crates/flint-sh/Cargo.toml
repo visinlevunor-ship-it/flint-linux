@@ -1,0 +1,11 @@
+[package]
+name = "flint-sh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Flint's shell"
+
+[dependencies]
+flint-core.workspace = true
+flint-auth = { path = "../flint-auth" }
+libc.workspace = true

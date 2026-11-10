@@ -255,7 +255,14 @@ pub fn whoami(_: &[String]) -> i32 {
     util::finish_output("whoami", writeln!(std::io::stdout(), "{name}"))
 }
 
-pub fn id(_: &[String]) -> i32 {
+pub fn id(args: &[String]) -> i32 {
+    let p = match util::parse(args, "ugGnr", "") {
+        Ok(p) => p,
+        Err(e) => {
+            error("id", e);
+            return 1;
+        }
+    };
     let users = parse_passwd(&passwd_text());
     let groups = parse_group(&std::fs::read_to_string("/etc/group").unwrap_or_default());
     // SAFETY: plain libc queries; getgroups fills a buffer of the size we pass.
@@ -263,19 +270,35 @@ pub fn id(_: &[String]) -> i32 {
         let mut buf = [0 as libc::gid_t; 64];
         let n = libc::getgroups(buf.len() as _, buf.as_mut_ptr());
         let gids: Vec<u32> = if n > 0 { buf[..n as usize].to_vec() } else { Vec::new() };
-        (libc::getuid(), libc::getgid(), gids)
+        if p.has('r') {
+            (libc::getuid(), libc::getgid(), gids)
+        } else {
+            (libc::geteuid(), libc::getegid(), gids)
+        }
     };
-    let uname = find_user_by_uid(&users, uid).map(|u| u.name.clone());
+    let uname = |u: u32| find_user_by_uid(&users, u).map(|x| x.name.clone());
     let gname = |g: u32| groups.iter().find(|x| x.gid == g).map(|x| x.name.clone());
-    let fmt = |n: u32, name: Option<String>| match name {
-        Some(s) => format!("{n}({s})"),
-        None => n.to_string(),
+    let by_name = p.has('n');
+    let line = if p.has('u') {
+        if by_name { uname(uid).unwrap_or_else(|| uid.to_string()) } else { uid.to_string() }
+    } else if p.has('g') {
+        if by_name { gname(gid).unwrap_or_else(|| gid.to_string()) } else { gid.to_string() }
+    } else if p.has('G') {
+        let mut all = vec![gid];
+        all.extend(gids.iter().copied().filter(|g| *g != gid));
+        all.iter().map(|&g| if by_name { gname(g).unwrap_or_else(|| g.to_string()) } else { g.to_string() }).collect::<Vec<_>>().join(" ")
+    } else {
+        let fmt = |n: u32, name: Option<String>| match name {
+            Some(s) => format!("{n}({s})"),
+            None => n.to_string(),
+        };
+        let mut line = format!("uid={} gid={}", fmt(uid, uname(uid)), fmt(gid, gname(gid)));
+        if !gids.is_empty() {
+            let list: Vec<String> = gids.iter().map(|&g| fmt(g, gname(g))).collect();
+            line.push_str(&format!(" groups={}", list.join(",")));
+        }
+        line
     };
-    let mut line = format!("uid={} gid={}", fmt(uid, uname), fmt(gid, gname(gid)));
-    if !gids.is_empty() {
-        let list: Vec<String> = gids.iter().map(|&g| fmt(g, gname(g))).collect();
-        line.push_str(&format!(" groups={}", list.join(",")));
-    }
     util::finish_output("id", writeln!(std::io::stdout(), "{line}"))
 }
 
@@ -355,7 +378,8 @@ pub fn parse_signal(s: &str) -> Option<i32> {
     if let Ok(n) = s.parse::<i32>() {
         return (0..=64).contains(&n).then_some(n);
     }
-    let name = s.strip_prefix("SIG").unwrap_or(s).to_ascii_uppercase();
+    let upper = s.to_ascii_uppercase();
+    let name = upper.strip_prefix("SIG").unwrap_or(&upper);
     SIGNALS.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
 }
 
@@ -442,6 +466,7 @@ mod tests {
         assert_eq!(parse_signal("TERM"), Some(15));
         assert_eq!(parse_signal("SIGKILL"), Some(9));
         assert_eq!(parse_signal("kill"), Some(9));
+        assert_eq!(parse_signal("sigterm"), Some(15));
         assert_eq!(parse_signal("9"), Some(9));
         assert_eq!(parse_signal("0"), Some(0));
         assert_eq!(parse_signal("NOPE"), None);
