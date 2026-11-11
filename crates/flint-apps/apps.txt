@@ -22,9 +22,12 @@ bin lsmod
 bin mkdir
 sbin modload
 sbin modprobe
-sbin mountboot
 bin mount
+sbin mountboot
 bin mv
+bin net
+sbin netd
+bin ping
 bin pkg
 sbin power
 sbin poweroff

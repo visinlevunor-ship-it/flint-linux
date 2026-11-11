@@ -11,6 +11,7 @@ dependencies = [
  "flint-dev",
  "flint-init",
  "flint-login",
+ "flint-net",
  "flint-pkg",
  "flint-power",
  "flint-sh",
@@ -66,6 +67,14 @@ name = "flint-mkimage"
 version = "0.1.0"
 dependencies = [
  "flint-auth",
+]
+
+[[package]]
+name = "flint-net"
+version = "0.1.0"
+dependencies = [
+ "flint-core",
+ "libc",
 ]
 
 [[package]]

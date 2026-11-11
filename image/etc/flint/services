@@ -7,6 +7,7 @@
 # tty:   '-' to inherit the console, or a /dev path to become the controlling tty
 # No shell and no quoting: fields are split on whitespace.
 devd    respawn   -           /sbin/devd
+netd    respawn   -           /sbin/netd
 tty1    respawn   /dev/tty1   /sbin/login
 tty2    respawn   /dev/tty2   /sbin/login
 tty3    respawn   /dev/tty3   /sbin/login

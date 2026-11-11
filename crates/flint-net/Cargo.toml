@@ -1,0 +1,10 @@
+[package]
+name = "flint-net"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Networking: netd (DHCP, Wi-Fi with WPA2), the net command, ping, DNS"
+
+[dependencies]
+flint-core.workspace = true
+libc.workspace = true

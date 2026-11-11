@@ -86,11 +86,15 @@ cp "$BOOT" "$RFS/etc/flint/boot"
 cp "$SERVICES" "$RFS/etc/flint/services"
 cp "$ROOT/image/etc/flint/modules.blacklist" "$RFS/etc/flint/modules.blacklist"
 echo "flint" > "$RFS/etc/hostname"
+printf '127.0.0.1\tlocalhost flint\n::1\tlocalhost\n' > "$RFS/etc/hosts"
+# netd writes DNS servers to /run (a tmpfs); saved Wi-Fi networks live on the boot partition.
+ln -s ../run/resolv.conf "$RFS/etc/resolv.conf"
+ln -s /boot/FLINT/NETWORKS "$RFS/etc/flint/networks"
 for f in passwd group shadow motd shells os-release; do
     cp "$ROOT/image/etc/$f" "$RFS/etc/$f"
 done
 sed "s/@VERSION@/$(cat "$ROOT/VERSION")/" "$ROOT/image/etc/os-release" > "$RFS/etc/os-release"
-chmod 644 "$RFS/etc/passwd" "$RFS/etc/group" "$RFS/etc/motd" "$RFS/etc/shells" "$RFS/etc/os-release"
+chmod 644 "$RFS/etc/hosts" "$RFS/etc/passwd" "$RFS/etc/group" "$RFS/etc/motd" "$RFS/etc/shells" "$RFS/etc/os-release"
 chmod 600 "$RFS/etc/shadow"
 
 # Example package repository from packages/ (optional: needs a pkg for this machine).

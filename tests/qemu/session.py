@@ -93,7 +93,7 @@ try:
 
     q.login("root", "flint", "root@flint:~# "); step("root logs in; sh prompt shows user, host and ~")
     q.sh("echo R-$((6*7))", "R-42"); step("shell arithmetic")
-    q.sh("echo B-$(flint --list | wc -l) L-$(ls /bin /sbin | grep -c '^flint-')", "B-43 L-0"); step("one flint binary, 43 programs, no flint-* commands")
+    q.sh("echo B-$(flint --list | wc -l) L-$(ls /bin /sbin | grep -c '^flint-')", "B-46 L-0"); step("one flint binary, 46 programs, no flint-* commands")
     q.sh("echo P-$(readlink /bin/pkg) S-$(readlink /bin/sh) I-$(readlink /sbin/init)", "P-flint S-flint I-../bin/flint"); step("pkg, sh and init are links to flint")
     q.sh("/bin/id", "uid=0(root) gid=0(root) groups=0(root)"); step("id (root)")
     q.sh('echo "E-$HOME|$USER|$LOGNAME|$SHELL|$TERM"', "E-/root|root|root|/bin/sh|linux"); step("root environment")

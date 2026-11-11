@@ -14,6 +14,7 @@ flint-core.workspace = true
 flint-box = { path = "../flint-box" }
 flint-dev = { path = "../flint-dev" }
 flint-init = { path = "../flint-init" }
+flint-net = { path = "../flint-net" }
 flint-login = { path = "../flint-login" }
 flint-pkg = { path = "../flint-pkg" }
 flint-power = { path = "../flint-power" }
