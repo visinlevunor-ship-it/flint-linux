@@ -3,7 +3,7 @@
 //! * [`sha256`], [`hmac`], [`pbkdf2`]: the primitives behind password hashes.
 //! * [`hash`]: Flint's stored password format and verification.
 //! * [`files`]: /etc/passwd, /etc/shadow and /etc/group parsing and editing.
-//! * [`login`]: the authentication decision `flint-login` makes.
+//! * [`login`]: the authentication decision `login` makes.
 
 pub mod files;
 pub mod hash;

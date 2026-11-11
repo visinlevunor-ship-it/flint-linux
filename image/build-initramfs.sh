@@ -1,22 +1,21 @@
 #!/bin/sh
-# Build a Flint initramfs for QEMU testing.
+# Build Flint's root filesystem as an initramfs (newc cpio).
 #
-#   BUSYBOX=/path/to/static-busybox image/build-initramfs.sh [output.cpio.gz]
+#   BUSYBOX=/path/to/static-busybox image/build-initramfs.sh [output.img]
 #
 # Environment:
-#   BUSYBOX   (required) static Linux x86_64 busybox: stopgap for the few tools flint-box
-#             does not have yet (grep, sed, date, ...)
-#   TARGET    cargo target the binaries were built for   (default x86_64-unknown-linux-musl)
-#   PROFILE   cargo profile directory                    (default release)
-#   BINDIR    built std binaries: flint-init, flint-power, flint-login, flint-passwd, flint-su,
-#             flint-sh, flint-box, flint-pkg
-#                                                          (default target/$TARGET/$PROFILE)
-#   RTBINDIR  built flint-rt binaries: flint-version       (default rt/target/$TARGET/$PROFILE)
-#   SERVICES  services file to install                   (default image/etc/flint/services.qemu)
-#   BOOT      boot tasks file to install                 (default image/etc/flint/boot.qemu)
-#   OVERLAY   directory copied over the finished rootfs  (optional, for test files)
-#   HOSTPKG   a flint-pkg that runs on THIS machine, used to build the example package
-#             repository   (default target/release/flint-pkg: cargo build --release -p flint-pkg)
+#   BUSYBOX   (required) static Linux x86_64 busybox: stopgap for the few tools Flint does
+#             not have yet (grep, sed, date, ...)
+#   TARGET    cargo target the Flint binaries were built for (default x86_64-unknown-linux-musl)
+#   PROFILE   cargo profile directory                         (default release)
+#   BINDIR    the built Linux binaries flint, su, passwd     (default target/$TARGET/$PROFILE)
+#   HOSTBIN   tools built for THIS machine: flint-mkimage, pkg
+#             (default target/release; build them with: cargo build --release -p flint-mkimage -p flint-pkg)
+#   SERVICES  services file to install                        (default image/etc/flint/services.qemu)
+#   BOOT      boot tasks file to install                      (default image/etc/flint/boot.qemu)
+#   OVERLAY   directory copied over the finished rootfs       (optional, for test files)
+#   RTBINDIR  libc-free flint-rt programs, installed under /usr/lib/flint if present
+#                                                             (default rt/target/$TARGET/$PROFILE)
 #
 # POSIX sh only: runs on FreeBSD and Linux hosts.
 set -eu
@@ -25,16 +24,18 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TARGET=${TARGET:-x86_64-unknown-linux-musl}
 PROFILE=${PROFILE:-release}
 BINDIR=${BINDIR:-$ROOT/target/$TARGET/$PROFILE}
+HOSTBIN=${HOSTBIN:-$ROOT/target/release}
 RTBINDIR=${RTBINDIR:-$ROOT/rt/target/$TARGET/$PROFILE}
 SERVICES=${SERVICES:-$ROOT/image/etc/flint/services.qemu}
 BOOT=${BOOT:-$ROOT/image/etc/flint/boot.qemu}
-OUT=${1:-$ROOT/target/flint-initramfs.cpio.gz}
+OUT=${1:-$ROOT/target/flint-base.img}
 : "${BUSYBOX:?set BUSYBOX to a static Linux x86_64 busybox binary}"
 
-for f in flint-init flint-power flint-login flint-passwd flint-su flint-sh flint-box flint-pkg; do
-    [ -x "$BINDIR/$f" ] || { echo "missing $BINDIR/$f (build first, or set BINDIR/TARGET)" >&2; exit 1; }
+for f in flint su passwd; do
+    [ -x "$BINDIR/$f" ] || { echo "missing $BINDIR/$f (build with: cargo build --release --workspace --target $TARGET)" >&2; exit 1; }
 done
-[ -x "$RTBINDIR/flint-version" ] || { echo "missing $RTBINDIR/flint-version (cd rt && cargo build --release ...)" >&2; exit 1; }
+MKIMAGE="$HOSTBIN/flint-mkimage"
+[ -x "$MKIMAGE" ] || { echo "missing $MKIMAGE (build with: cargo build --release -p flint-mkimage)" >&2; exit 1; }
 [ -f "$BUSYBOX" ] || { echo "BUSYBOX=$BUSYBOX does not exist" >&2; exit 1; }
 
 RFS=$(mktemp -d "${TMPDIR:-/tmp}/flint-rootfs.XXXXXX")
@@ -43,53 +44,58 @@ trap 'rm -rf "$RFS"' EXIT
 chmod 755 "$RFS"
 
 mkdir -p "$RFS/bin" "$RFS/sbin" "$RFS/etc/flint" "$RFS/dev" "$RFS/proc" "$RFS/sys" \
-         "$RFS/run" "$RFS/tmp" "$RFS/root" "$RFS/home" "$RFS/usr/bin" "$RFS/usr/sbin"
+         "$RFS/run" "$RFS/tmp" "$RFS/root" "$RFS/home" "$RFS/usr/bin" "$RFS/usr/sbin" \
+         "$RFS/usr/lib/flint" "$RFS/var/lib" "$RFS/lib"
 chmod 1777 "$RFS/tmp"
 chmod 700 "$RFS/root"
 
-# Flint's own pieces. The kernel runs /init as PID 1 for an initramfs.
-cp "$BINDIR/flint-init" "$RFS/init"
-cp "$BINDIR/flint-init" "$RFS/sbin/flint-init"
-cp "$BINDIR/flint-power" "$RFS/sbin/flint-power"
-cp "$BINDIR/flint-login" "$RFS/sbin/flint-login"
-cp "$BINDIR/flint-box" "$RFS/bin/flint-box"
-# passwd and su must be setuid root. Never set that bit on flint-box: it would run every
-# applet as root.
-cp "$BINDIR/flint-passwd" "$RFS/bin/passwd"
-cp "$BINDIR/flint-su" "$RFS/bin/su"
-chmod 4755 "$RFS/bin/passwd" "$RFS/bin/su"
-cp "$BINDIR/flint-sh" "$RFS/bin/flint-sh"
-cp "$BINDIR/flint-pkg" "$RFS/bin/flint-pkg"
-ln -s flint-sh "$RFS/bin/sh"
-cp "$RTBINDIR/flint-version" "$RFS/bin/flint-version"
-for a in poweroff reboot halt; do ln -s flint-power "$RFS/sbin/$a"; done
+# One binary for every Flint program, installed under the programs' normal names.
+cp "$BINDIR/flint" "$RFS/bin/flint"
+chmod 755 "$RFS/bin/flint"
+while read -r dir name; do
+    case "$dir" in ''|'#'*) continue ;; esac
+    if [ "$dir" = bin ]; then
+        ln -s flint "$RFS/bin/$name"
+    else
+        ln -s ../bin/flint "$RFS/$dir/$name"
+    fi
+done < "$ROOT/crates/flint-apps/apps.txt"
+# The kernel starts /init as PID 1.
+ln -s sbin/init "$RFS/init"
 
-# flint-box applets: one symlink per name in crates/flint-box/applets.txt.
-while read -r a; do
-    [ -n "$a" ] && ln -s flint-box "$RFS/bin/$a"
-done < "$ROOT/crates/flint-box/applets.txt"
+# su and passwd are setuid root, so they are separate small binaries. Never set that bit on
+# /bin/flint: it would run every program as root.
+cp "$BINDIR/su" "$RFS/bin/su"
+cp "$BINDIR/passwd" "$RFS/bin/passwd"
+chmod 4755 "$RFS/bin/su" "$RFS/bin/passwd"
 
-# Stopgap: busybox for whatever flint-box does not provide yet.
+# Programs on flint-rt (no libc at all), kept out of PATH.
+if [ -x "$RTBINDIR/flint-version" ]; then
+    cp "$RTBINDIR/flint-version" "$RFS/usr/lib/flint/version-nolibc"
+fi
+
+# Stopgap: busybox for whatever Flint does not provide yet.
 cp "$BUSYBOX" "$RFS/bin/busybox"
 chmod 755 "$RFS/bin/busybox"
 for a in dmesg free date grep sed awk find sort uniq tr cut xargs less vi tee basename dirname \
-         which readlink stat df du mknod mkfifo insmod rmmod lsmod modprobe ifconfig ip ping; do
+         which readlink stat df du mknod mkfifo lsmod; do
     [ -e "$RFS/bin/$a" ] || [ -h "$RFS/bin/$a" ] || ln -s busybox "$RFS/bin/$a"
 done
 
 cp "$BOOT" "$RFS/etc/flint/boot"
 cp "$SERVICES" "$RFS/etc/flint/services"
 echo "flint" > "$RFS/etc/hostname"
-for f in passwd group shadow motd shells; do
+for f in passwd group shadow motd shells os-release; do
     cp "$ROOT/image/etc/$f" "$RFS/etc/$f"
 done
-chmod 644 "$RFS/etc/passwd" "$RFS/etc/group" "$RFS/etc/motd" "$RFS/etc/shells"
+sed "s/@VERSION@/$(cat "$ROOT/VERSION")/" "$ROOT/image/etc/os-release" > "$RFS/etc/os-release"
+chmod 644 "$RFS/etc/passwd" "$RFS/etc/group" "$RFS/etc/motd" "$RFS/etc/shells" "$RFS/etc/os-release"
 chmod 600 "$RFS/etc/shadow"
 
-# Example package repository from packages/ (optional: needs a flint-pkg for this host).
-HOSTPKG=${HOSTPKG:-$ROOT/target/release/flint-pkg}
+# Example package repository from packages/ (optional: needs a pkg for this machine).
+HOSTPKG="$HOSTBIN/pkg"
 if [ -x "$HOSTPKG" ] && "$HOSTPKG" --version >/dev/null 2>&1; then
-    REPO="$RFS/var/cache/flint-pkg/repo"
+    REPO="$RFS/var/cache/pkg/repo"
     mkdir -p "$REPO"
     for d in "$ROOT"/packages/*/; do
         if [ -f "$d/control" ]; then
@@ -97,9 +103,9 @@ if [ -x "$HOSTPKG" ] && "$HOSTPKG" --version >/dev/null 2>&1; then
         fi
     done
     "$HOSTPKG" index "$REPO" >/dev/null
-    echo "repo /var/cache/flint-pkg/repo" > "$RFS/etc/flint/pkg.conf"
+    echo "repo /var/cache/pkg/repo" > "$RFS/etc/flint/pkg.conf"
 else
-    echo "note: no usable flint-pkg for this host at $HOSTPKG; skipping the example repository" >&2
+    echo "note: no usable pkg for this machine at $HOSTPKG; skipping the example repository" >&2
     echo "      (build one with: cargo build --release -p flint-pkg)" >&2
 fi
 
@@ -108,6 +114,5 @@ if [ -n "${OVERLAY:-}" ]; then
 fi
 
 mkdir -p "$(dirname "$OUT")"
-# -R 0:0 makes everything root-owned whoever runs the script.
-( cd "$RFS" && find . | cpio -o -H newc -R 0:0 2>/dev/null ) | gzip -9 > "$OUT"
-echo "wrote $OUT ($(wc -c < "$OUT") bytes)"
+"$MKIMAGE" cpio "$RFS" "$OUT"
+echo "wrote $OUT ($(wc -c < "$OUT" | tr -d ' ') bytes)"

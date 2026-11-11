@@ -1,5 +1,5 @@
 //! End-to-end tests: build packages, publish a repository, and install, upgrade, remove and
-//! verify into throwaway roots by running the real flint-pkg binary.
+//! verify into throwaway roots by running the real pkg binary.
 
 use std::fs;
 use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-const BIN: &str = env!("CARGO_BIN_EXE_flint-pkg");
+const BIN: &str = env!("CARGO_BIN_EXE_pkg");
 
 struct Out {
     stdout: String,
@@ -78,7 +78,7 @@ impl Env {
         run(&["index", &self.s("repo")]).ok();
     }
 
-    /// flint-pkg --root ROOT --repo REPO ARGS...
+    /// pkg --root ROOT --repo REPO ARGS...
     fn pkg(&self, args: &[&str]) -> Out {
         let (root, repo) = (self.s("root"), self.s("repo"));
         let mut all = vec!["--root", root.as_str(), "--repo", repo.as_str()];
@@ -131,7 +131,7 @@ fn dry_run_changes_nothing() {
     let o = e.pkg(&["-n", "install", "a"]);
     assert!(o.ok().stdout.contains("dry run"));
     assert!(!e.root("opt/a").exists());
-    assert!(!e.root("var/lib/flint-pkg").exists());
+    assert!(!e.root("var/lib/pkg").exists());
 }
 
 #[test]
@@ -270,13 +270,13 @@ fn missing_dependency_and_repo_errors_are_clear() {
 fn a_held_lock_blocks_changes() {
     let e = Env::new();
     e.publish("a", "name: a\nversion: 1\n", &[("opt/a", "a\n", 0o644)]);
-    fs::create_dir_all(e.root("var/lib/flint-pkg")).unwrap();
-    fs::write(e.root("var/lib/flint-pkg/lock"), "123\n").unwrap();
-    e.pkg(&["install", "a"]).fails("another flint-pkg seems to be running");
+    fs::create_dir_all(e.root("var/lib/pkg")).unwrap();
+    fs::write(e.root("var/lib/pkg/lock"), "123\n").unwrap();
+    e.pkg(&["install", "a"]).fails("another pkg seems to be running");
     e.pkg(&["list"]).ok();
-    fs::remove_file(e.root("var/lib/flint-pkg/lock")).unwrap();
+    fs::remove_file(e.root("var/lib/pkg/lock")).unwrap();
     e.pkg(&["install", "a"]).ok();
-    assert!(!e.root("var/lib/flint-pkg/lock").exists(), "the lock is released");
+    assert!(!e.root("var/lib/pkg/lock").exists(), "the lock is released");
 }
 
 #[test]
@@ -292,7 +292,7 @@ fn pkg_conf_repositories() {
 }
 
 // ---------------------------------------------------------------- hostile packages
-// Hand-made archives, so the tests do not depend on flint-pkg's own writer.
+// Hand-made archives, so the tests do not depend on pkg's own writer.
 
 fn tar_header(name: &str, typeflag: u8, size: u64, link: &str, mode: u32) -> [u8; 512] {
     let mut b = [0u8; 512];
@@ -356,12 +356,12 @@ fn path_traversal_is_refused() {
     hostile(&e.p("src/b-1.fpk"), "name: b\nversion: 1\n", &[Ent::File("/etc/evil", b"x")], false);
     install_file(&e, "src/b-1.fpk").fails("absolute path");
 
-    hostile(&e.p("src/c-1.fpk"), "name: c\nversion: 1\n", &[Ent::File("var/lib/flint-pkg/installed/root", b"x")], false);
+    hostile(&e.p("src/c-1.fpk"), "name: c\nversion: 1\n", &[Ent::File("var/lib/pkg/installed/root", b"x")], false);
     install_file(&e, "src/c-1.fpk").fails("reserved path");
-    // Only flint-pkg's own (empty) state directory exists; no package file was written.
+    // Only pkg's own (empty) state directory exists; no package file was written.
     let top: Vec<String> = fs::read_dir(e.p("root")).unwrap().flatten().map(|d| d.file_name().to_string_lossy().into_owned()).collect();
     assert_eq!(top, ["var"]);
-    assert!(fs::read_dir(e.root("var/lib/flint-pkg")).unwrap().next().is_none(), "no database entry, no lock left");
+    assert!(fs::read_dir(e.root("var/lib/pkg")).unwrap().next().is_none(), "no database entry, no lock left");
 }
 
 #[test]
@@ -409,5 +409,5 @@ fn a_failed_install_is_rolled_back() {
     install_file(&e, "src/a-1.fpk").fails("rolled back");
     assert!(!e.root("opt").exists(), "the files and directories it created are gone");
     assert!(run(&["--root", &e.s("root"), "list"]).ok().stdout.is_empty(), "nothing recorded");
-    assert!(!e.root("var/lib/flint-pkg/lock").exists());
+    assert!(!e.root("var/lib/pkg/lock").exists());
 }

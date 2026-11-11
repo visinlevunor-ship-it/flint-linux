@@ -1,4 +1,4 @@
-//! The authentication decision flint-login makes.
+//! The authentication decision login makes.
 
 use crate::files::{find_user, parse_passwd, shadow_hash, User};
 use crate::hash::{is_locked, verify};

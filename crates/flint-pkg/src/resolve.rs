@@ -17,7 +17,7 @@ pub fn load_repos(dirs: &[PathBuf]) -> Result<Vec<Repo>, String> {
     let mut repos = Vec::new();
     for dir in dirs {
         let index = dir.join("INDEX");
-        let text = fs::read_to_string(&index).map_err(|e| format!("repository {}: cannot read INDEX: {e} (create it with: flint-pkg index {})", dir.display(), dir.display()))?;
+        let text = fs::read_to_string(&index).map_err(|e| format!("repository {}: cannot read INDEX: {e} (create it with: pkg index {})", dir.display(), dir.display()))?;
         let entries = parse_index(&text).map_err(|e| format!("repository {}: {e}", dir.display()))?;
         repos.push(Repo { dir: dir.clone(), entries });
     }

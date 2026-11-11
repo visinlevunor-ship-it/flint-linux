@@ -12,7 +12,7 @@ extern "C" fn on_sigint(_: libc::c_int) {
     INTERRUPTED.store(true, Ordering::SeqCst);
 }
 
-const USAGE: &str = "usage: flint-sh [-c COMMAND [NAME [ARG...]]] | [-i] [-l] [SCRIPT [ARG...]] | -s [ARG...]\n";
+const USAGE: &str = "usage: sh [-c COMMAND [NAME [ARG...]]] | [-i] [-l] [SCRIPT [ARG...]] | -s [ARG...]\n";
 
 /// Expand `\u \h \w \W \$ \n \e \\ \[ \]` in a prompt template.
 pub fn prompt_escapes(t: &str, user: &str, host: &str, cwd: &str, home: &str, root: bool) -> String {
@@ -183,13 +183,12 @@ fn source_if_exists(sh: &mut Shell, path: &str) {
     }
 }
 
-pub fn main() -> i32 {
+pub fn main(args: Vec<String>) -> i32 {
     // Rust ignores SIGPIPE; a shell (and what it runs) should die quietly on a closed pipe.
     // SAFETY: resetting a signal disposition.
     unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
 
-    let args: Vec<String> = std::env::args().collect();
-    let argv0 = args.first().cloned().unwrap_or_else(|| "flint-sh".into());
+    let argv0 = args.first().cloned().unwrap_or_else(|| "sh".into());
     let login = argv0.rsplit('/').next().unwrap_or("").starts_with('-');
 
     let (mut command_mode, mut force_interactive, mut read_stdin) = (false, false, false);
@@ -201,7 +200,7 @@ pub fn main() -> i32 {
                 break;
             }
             "--version" => {
-                write_fd(1, format!("flint-sh ({})\n", flint_core::version::long()).as_bytes());
+                write_fd(1, format!("sh ({})\n", flint_core::version::long()).as_bytes());
                 return 0;
             }
             "-h" | "--help" => {
@@ -216,7 +215,7 @@ pub fn main() -> i32 {
                         's' => read_stdin = true,
                         'l' => {}
                         other => {
-                            write_fd(2, format!("flint-sh: invalid option -{other}\n{USAGE}").as_bytes());
+                            write_fd(2, format!("sh: invalid option -{other}\n{USAGE}").as_bytes());
                             return 2;
                         }
                     }

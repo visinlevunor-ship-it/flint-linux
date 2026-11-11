@@ -3,8 +3,14 @@ name = "flint-pkg"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Flint's package manager"
+description = "Flint's package manager (pkg). The library runs inside the flint binary; the pkg binary is for building packages on any host."
 
 [dependencies]
+# Only the version module (no std/libc parts), so pkg also builds on non-Linux hosts.
+flint-core = { path = "../flint-core", default-features = false }
 flint-auth = { path = "../flint-auth" }
 libc.workspace = true
+
+[[bin]]
+name = "pkg"
+path = "src/bin/pkg.rs"

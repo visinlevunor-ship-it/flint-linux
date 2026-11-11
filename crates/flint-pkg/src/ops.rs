@@ -35,7 +35,7 @@ pub struct Lock(PathBuf);
 
 impl Lock {
     pub fn acquire(root: &Path) -> Result<Lock, String> {
-        let p = root.join("var/lib/flint-pkg/lock");
+        let p = root.join("var/lib/pkg/lock");
         if let Some(dir) = p.parent() {
             fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
@@ -45,7 +45,7 @@ impl Lock {
                 Ok(Lock(p))
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                Err(format!("another flint-pkg seems to be running; if it is not, remove {}", p.display()))
+                Err(format!("another pkg seems to be running; if it is not, remove {}", p.display()))
             }
             Err(e) => Err(format!("{}: {e}", p.display())),
         }
@@ -186,7 +186,7 @@ pub fn install_step(ctx: &Ctx, step: &Step, old: Option<&Installed>, notes: &mut
     let mut symlinks: HashSet<String> = HashSet::new();
     while let Some(e) = reader.next_entry().map_err(|e| bad(e.to_string()))? {
         let rel = normalize_rel(&e.header.name).map_err(bad)?;
-        if rel == CONTROL_NAME || rel.split('/').any(|c| c.starts_with(".flint-pkg")) || rel.starts_with("var/lib/flint-pkg") {
+        if rel == CONTROL_NAME || rel.split('/').any(|c| c.starts_with(".pkg-tmp-")) || rel.starts_with("var/lib/pkg") {
             return Err(bad(format!("reserved path {rel}")));
         }
         if !seen.insert(rel.clone()) {
@@ -271,7 +271,7 @@ pub fn install_step(ctx: &Ctx, step: &Step, old: Option<&Installed>, notes: &mut
                 }
                 Kind::File => {
                     let parent = full.parent().ok_or("bad path")?.to_path_buf();
-                    let tmp = parent.join(format!(".flint-pkg-tmp-{}-{idx}", std::process::id()));
+                    let tmp = parent.join(format!(".pkg-tmp-{}-{idx}", std::process::id()));
                     let _ = fs::remove_file(&tmp);
                     let written = (|| -> Result<String, String> {
                         let mut out = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp).map_err(|e| io(e, &tmp))?;
@@ -338,7 +338,7 @@ pub fn install_step(ctx: &Ctx, step: &Step, old: Option<&Installed>, notes: &mut
                 created.undo();
                 return Err(format!("{e} (the partial install was rolled back)"));
             }
-            return Err(format!("{e} (the upgrade stopped half way; run the upgrade again, or `flint-pkg verify {}`)", control.name));
+            return Err(format!("{e} (the upgrade stopped half way; run the upgrade again, or `pkg verify {}`)", control.name));
         }
     };
 

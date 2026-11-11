@@ -1,17 +1,17 @@
 # Example packages
 
-Package sources for `flint-pkg build`. Each directory holds a `control` file and a `files/`
+Package sources for `pkg build`. Each directory holds a `control` file and a `files/`
 tree that is installed relative to `/`.
 
 ```sh
-flint-pkg build packages/hello repo/
-flint-pkg build packages/greet-data repo/
-flint-pkg index repo/
-flint-pkg --root /tmp/test-root --repo repo/ install hello
+pkg build packages/hello repo/
+pkg build packages/greet-data repo/
+pkg index repo/
+pkg --root /tmp/test-root --repo repo/ install hello
 ```
 
-`image/build-initramfs.sh` builds these into `/var/cache/flint-pkg/repo` inside the image and
-points `/etc/flint/pkg.conf` at it, so `flint-pkg install hello` works in QEMU.
+`image/build-initramfs.sh` builds these into `/var/cache/pkg/repo` inside the image and
+points `/etc/flint/pkg.conf` at it, so `pkg install hello` works in QEMU.
 
 ## control file
 

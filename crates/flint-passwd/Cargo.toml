@@ -9,3 +9,7 @@ description = "passwd for Flint. Installed setuid root (and only this binary is:
 flint-core.workspace = true
 flint-auth = { path = "../flint-auth" }
 libc.workspace = true
+
+[[bin]]
+name = "passwd"
+path = "src/main.rs"

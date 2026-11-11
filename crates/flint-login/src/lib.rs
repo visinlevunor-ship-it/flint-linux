@@ -1,14 +1,14 @@
-//! flint-login: getty + login in one program.
+//! login: getty + login in one program.
 //!
-//! flint-init starts it on a terminal (controlling tty and stdio already set up).
+//! init starts it on a terminal (controlling tty and stdio already set up).
 //! It shows a banner, asks for a user name and password, checks them against
 //! /etc/passwd and /etc/shadow, then becomes the user's login shell. When that shell
-//! exits, flint-init sees the exit and starts flint-login again.
+//! exits, init sees the exit and starts login again.
 
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::process::CommandExt;
-use std::process::{Command, ExitCode};
+use std::process::{Command};
 use std::thread;
 use std::time::Duration;
 
@@ -24,11 +24,12 @@ const MAX_LINE: usize = 256;
 const ROOT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 const USER_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
 
-fn main() -> ExitCode {
+/// Entry point (no arguments are used).
+pub fn main(_args: Vec<String>) -> i32 {
     // SAFETY: plain libc query.
     if unsafe { libc::geteuid() } != 0 {
-        eprintln!("flint-login: must run as root");
-        return ExitCode::FAILURE;
+        eprintln!("login: must run as root");
+        return 1;
     }
 
     set_sane_tty();
@@ -37,14 +38,14 @@ fn main() -> ExitCode {
     let hostname = hostname();
     for _ in 0..MAX_ATTEMPTS {
         let Some(name) = prompt_line(&format!("{hostname} login: "), true) else {
-            return ExitCode::SUCCESS; // EOF or timeout: init starts a fresh login
+            return 0; // EOF or timeout: init starts a fresh login
         };
         let name = name.trim().to_string();
         if name.is_empty() {
             continue;
         }
         let Some(password) = prompt_line("Password: ", false) else {
-            return ExitCode::SUCCESS;
+            return 0;
         };
 
         let passwd = fs::read_to_string("/etc/passwd").unwrap_or_default();
@@ -57,7 +58,7 @@ fn main() -> ExitCode {
             }
         }
     }
-    ExitCode::FAILURE
+    1
 }
 
 fn banner() {
@@ -137,7 +138,7 @@ fn prompt_line(prompt: &str, echo: bool) -> Option<String> {
     print!("{prompt}");
     let _ = io::stdout().flush();
 
-    // SAFETY: SIGALRM's default action ends this process; init then respawns flint-login.
+    // SAFETY: SIGALRM's default action ends this process; init then respawns login.
     unsafe { libc::alarm(PROMPT_TIMEOUT_SECS) };
     let line = read_line();
     // SAFETY: cancelling the timer.
@@ -225,7 +226,7 @@ fn start_session(user: &User) -> ! {
             && libc::setuid(user.uid) == 0
     };
     if !dropped {
-        eprintln!("flint-login: cannot switch to {}: {}", user.name, io::Error::last_os_error());
+        eprintln!("login: cannot switch to {}: {}", user.name, io::Error::last_os_error());
         std::process::exit(1);
     }
     // SAFETY: umask has no preconditions; alarm(0) cancels any pending timer (it survives exec).
@@ -255,7 +256,7 @@ fn start_session(user: &User) -> ! {
         cmd.env(k, v);
     }
     let err = cmd.exec();
-    eprintln!("flint-login: cannot run {shell}: {err}");
+    eprintln!("login: cannot run {shell}: {err}");
     std::process::exit(1)
 }
 
@@ -278,7 +279,7 @@ mod tests {
     #[test]
     fn login_shell_gets_a_dash() {
         assert_eq!(login_argv0("/bin/sh"), "-sh");
-        assert_eq!(login_argv0("/usr/local/bin/flint-sh"), "-flint-sh");
+        assert_eq!(login_argv0("/usr/local/bin/zsh"), "-zsh");
         assert_eq!(login_argv0("sh"), "-sh");
     }
 

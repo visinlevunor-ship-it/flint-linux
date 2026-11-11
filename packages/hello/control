@@ -1,5 +1,5 @@
 name: hello
 version: 1.0
-description: Example program installed with flint-pkg
+description: Example program installed with pkg
 arch: any
 depends: greet-data>=1.0

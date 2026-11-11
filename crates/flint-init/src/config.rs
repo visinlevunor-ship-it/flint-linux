@@ -118,7 +118,7 @@ pub fn load_tasks(dir: &Path) -> Result<Option<Vec<Vec<String>>>, String> {
 
 /// Used when /etc/flint/services is missing or broken, so the system stays usable.
 pub fn default_services() -> Vec<Service> {
-    let program = ["/sbin/flint-login", "/bin/flint-sh", "/bin/sh"]
+    let program = ["/sbin/login", "/bin/sh"]
         .into_iter()
         .find(|p| Path::new(p).exists())
         .unwrap_or("/bin/sh");
@@ -136,13 +136,13 @@ mod tests {
 
     #[test]
     fn parses_services_with_comments_and_blanks() {
-        let text = "\n# comment\ntty1 respawn /dev/tty1 /sbin/flint-login   # trailing\n\nlog once - /bin/logger -t boot hello\n";
+        let text = "\n# comment\ntty1 respawn /dev/tty1 /sbin/login   # trailing\n\nlog once - /bin/logger -t boot hello\n";
         let s = parse_services(text).unwrap();
         assert_eq!(s.len(), 2);
         assert_eq!(s[0].name, "tty1");
         assert_eq!(s[0].mode, Mode::Respawn);
         assert_eq!(s[0].tty.as_deref(), Some("/dev/tty1"));
-        assert_eq!(s[0].argv, vec!["/sbin/flint-login"]);
+        assert_eq!(s[0].argv, vec!["/sbin/login"]);
         assert_eq!(s[1].mode, Mode::Once);
         assert_eq!(s[1].tty, None);
         assert_eq!(s[1].argv, vec!["/bin/logger", "-t", "boot", "hello"]);

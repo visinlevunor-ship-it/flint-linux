@@ -9,3 +9,7 @@ description = "su for Flint. Installed setuid root (like flint-passwd; never fli
 flint-core.workspace = true
 flint-auth = { path = "../flint-auth" }
 libc.workspace = true
+
+[[bin]]
+name = "su"
+path = "src/main.rs"

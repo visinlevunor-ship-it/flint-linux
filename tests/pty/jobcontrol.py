@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Drive an interactive flint-sh on a real pseudo-terminal: prompt, job control, Ctrl-C/Ctrl-Z.
+"""Drive an interactive sh (flint) on a real pseudo-terminal: prompt, job control, Ctrl-C/Ctrl-Z.
 
-usage: tests/pty/jobcontrol.py [path/to/flint-sh]     (Linux only; needs coreutils `sleep`)
+usage: tests/pty/jobcontrol.py [path/to/flint]     (Linux only; needs coreutils `sleep`)
 """
 import os, pty, select, signal, sys, time
 
-BIN = sys.argv[1] if len(sys.argv) > 1 else "target/debug/flint-sh"
+BIN = sys.argv[1] if len(sys.argv) > 1 else "target/debug/flint"
 
 class Session:
     def __init__(self):
@@ -13,7 +13,7 @@ class Session:
         if pid == 0:
             # the child is a session leader with the pty as its controlling terminal
             env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "TERM": "xterm", "HOME": "/tmp", "PS1": "PROMPT> "}
-            os.execve(BIN, [BIN], env)
+            os.execve(BIN, ["sh"], env)  # argv[0] "sh" picks the shell
         self.pid, self.fd, self.buf, self.pos = pid, fd, "", 0
 
     def pump(self, timeout=0.2):

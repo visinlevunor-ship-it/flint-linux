@@ -24,9 +24,9 @@ pub fn out_bytes(b: &[u8]) {
     write_fd(1, b);
 }
 
-/// `flint-sh: message` on stderr.
+/// `sh: message` on stderr.
 pub fn errln(msg: &str) {
-    write_fd(2, format!("flint-sh: {msg}\n").as_bytes());
+    write_fd(2, format!("sh: {msg}\n").as_bytes());
 }
 
 pub fn errno() -> i32 {

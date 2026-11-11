@@ -1,4 +1,4 @@
-//! Runs the real flint-box binary.
+//! Runs the core tools through the real flint binary (`flint ls ...`).
 
 use std::fs;
 use std::io::Write;
@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-const BIN: &str = env!("CARGO_BIN_EXE_flint-box");
+const BIN: &str = env!("CARGO_BIN_EXE_flint");
 
 struct Out {
     stdout: String,
@@ -16,7 +16,7 @@ struct Out {
 }
 
 fn run_in(dir: &Path, args: &[&str]) -> Out {
-    let o = Command::new(BIN).args(args).current_dir(dir).output().expect("run flint-box");
+    let o = Command::new(BIN).args(args).current_dir(dir).output().expect("run flint");
     Out {
         stdout: String::from_utf8_lossy(&o.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
@@ -70,11 +70,17 @@ impl Drop for Tmp {
 }
 
 #[test]
-fn list_matches_applets_txt() {
+fn list_has_every_tool_and_program() {
     let o = run(&["--list"]);
     assert_eq!(o.code, 0);
-    let want: String = include_str!("../applets.txt").to_string();
-    assert_eq!(o.stdout, want);
+    let listed: Vec<&str> = o.stdout.lines().collect();
+    for tool in include_str!("../../flint-box/applets.txt").lines().filter(|l| !l.is_empty()) {
+        assert!(listed.contains(&tool), "{tool} missing from flint --list");
+    }
+    for prog in ["sh", "pkg", "init", "login", "poweroff", "reboot", "halt"] {
+        assert!(listed.contains(&prog), "{prog} missing from flint --list");
+    }
+    assert!(!listed.iter().any(|n| n.starts_with("flint")), "no flint-* names: {listed:?}");
 }
 
 #[test]
@@ -87,8 +93,24 @@ fn dispatch_by_symlink_name_and_unknown_applet() {
 
     let o = run(&["nosuchapplet"]);
     assert_eq!(o.code, 127);
-    assert!(o.stderr.contains("unknown applet"));
+    assert!(o.stderr.contains("no program called 'nosuchapplet'"), "{}", o.stderr);
     assert_eq!(run(&[]).code, 2);
+
+    // the same through a symlink with an unknown name
+    let odd = t.path().join("frobnicate");
+    symlink(BIN, &odd).unwrap();
+    let o = Command::new(&odd).output().unwrap();
+    assert_eq!(o.status.code(), Some(127));
+
+    // a login shell is started as "-sh"
+    let sh = t.path().join("sh");
+    symlink(BIN, &sh).unwrap();
+    use std::os::unix::process::CommandExt;
+    let o = Command::new(&sh).arg0("-sh").args(["-c", "echo login-$0"]).env("HOME", t.path()).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&o.stdout), "login--sh\n");
+
+    let v = run(&["--version"]);
+    assert!(v.stdout.starts_with("Flint Linux "), "{}", v.stdout);
 }
 
 #[test]
@@ -284,7 +306,7 @@ fn env_prints_and_runs() {
     assert!(o.stdout.lines().any(|l| l == "FLINT_T=hello"));
     let o = run(&["env", "-i", "A=1"]);
     assert_eq!(o.stdout, "A=1\n");
-    // run another program with a changed environment: flint-box itself as `env` with no args
+    // run another program with a changed environment: flint itself as `env` with no args
     let o = Command::new(BIN).args(["env", "-i", "ZZ=9", BIN, "env"]).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&o.stdout), "ZZ=9\n");
     let o = run(&["env", "/definitely/not/here"]);

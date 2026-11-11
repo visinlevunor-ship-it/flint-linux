@@ -3,11 +3,13 @@ resolver = "2"
 # rt/ is a separate workspace: no_std programs need panic=abort and their own link flags.
 exclude = ["rt"]
 members = [
+    "crates/flint-apps",
     "crates/flint-auth",
     "crates/flint-box",
     "crates/flint-core",
     "crates/flint-init",
     "crates/flint-login",
+    "crates/flint-mkimage",
     "crates/flint-passwd",
     "crates/flint-pkg",
     "crates/flint-sh",

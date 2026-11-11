@@ -11,7 +11,6 @@
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::process::ExitCode;
 use std::thread;
 use std::time::Duration;
 
@@ -23,9 +22,9 @@ const SHADOW: &str = "/etc/shadow";
 const PASSWD: &str = "/etc/passwd";
 const WRONG_PASSWORD_DELAY: Duration = Duration::from_secs(2);
 
-fn fail(msg: &str) -> ExitCode {
+fn fail(msg: &str) -> i32 {
     eprintln!("passwd: {msg}");
-    ExitCode::FAILURE
+    1
 }
 
 /// May the caller (real uid `caller`) change the password of `target`?
@@ -53,7 +52,11 @@ fn write_shadow(text: &str) -> std::io::Result<()> {
     fs::rename(&tmp, SHADOW)
 }
 
-fn main() -> ExitCode {
+fn main() {
+    std::process::exit(run());
+}
+
+fn run() -> i32 {
     // SAFETY: plain libc queries.
     let (caller, effective) = unsafe { (libc::getuid(), libc::geteuid()) };
     if effective != 0 {
@@ -63,7 +66,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.len() > 1 || args.first().is_some_and(|a| a.starts_with('-')) {
         eprintln!("usage: passwd [USER]");
-        return ExitCode::from(2);
+        return 2;
     }
 
     let users = parse_passwd(&fs::read_to_string(PASSWD).unwrap_or_default());
@@ -85,7 +88,7 @@ fn main() -> ExitCode {
 
     if needs_current_password(caller) {
         let stored = shadow_hash(&shadow_text, &target.name).unwrap_or("");
-        let Some(current) = read_secret("Current password: ") else { return ExitCode::FAILURE };
+        let Some(current) = read_secret("Current password: ") else { return 1 };
         let ok = !is_locked(stored) && verify(&current, stored) == Ok(true);
         if !ok {
             thread::sleep(WRONG_PASSWORD_DELAY);
@@ -94,11 +97,11 @@ fn main() -> ExitCode {
     }
 
     println!("Changing password for {}", target.name);
-    let Some(new) = read_secret("New password: ") else { return ExitCode::FAILURE };
+    let Some(new) = read_secret("New password: ") else { return 1 };
     if new.is_empty() {
         return fail("the password cannot be empty");
     }
-    let Some(again) = read_secret("Retype new password: ") else { return ExitCode::FAILURE };
+    let Some(again) = read_secret("Retype new password: ") else { return 1 };
     if new != again {
         return fail("the passwords do not match");
     }
@@ -110,7 +113,7 @@ fn main() -> ExitCode {
     match write_shadow(&set_shadow_hash(&shadow_text, &target.name, &hash)) {
         Ok(()) => {
             println!("Password updated");
-            ExitCode::SUCCESS
+            0
         }
         Err(e) => fail(&format!("cannot write {SHADOW}: {e}")),
     }

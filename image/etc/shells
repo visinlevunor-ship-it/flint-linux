@@ -1,3 +1,2 @@
 # Login shells that su will accept for non-root users.
 /bin/sh
-/bin/flint-sh

@@ -1,0 +1,13 @@
+[package]
+name = "flint-mkimage"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Build tool for Flint images: cpio archives, driver/firmware selection, GPT + FAT32 disk images. Runs on the build machine (Linux, FreeBSD, ...)."
+
+[[bin]]
+name = "flint-mkimage"
+path = "src/main.rs"
+
+[dependencies]
+flint-auth = { path = "../flint-auth" }

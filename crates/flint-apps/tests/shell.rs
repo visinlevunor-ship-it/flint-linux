@@ -1,4 +1,4 @@
-//! Runs the real flint-sh binary on scripts.
+//! Runs the shell (`flint sh`) on scripts.
 
 use std::fs;
 use std::io::Write;
@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-const BIN: &str = env!("CARGO_BIN_EXE_flint-sh");
+const BIN: &str = env!("CARGO_BIN_EXE_flint");
 
 struct Out {
     stdout: String,
@@ -16,9 +16,9 @@ struct Out {
 
 fn run_args(dir: &Path, args: &[&str], stdin: Option<&str>) -> Out {
     let mut cmd = Command::new(BIN);
-    cmd.args(args).current_dir(dir).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.arg("sh").args(args).current_dir(dir).stdout(Stdio::piped()).stderr(Stdio::piped());
     cmd.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() });
-    let mut child = cmd.spawn().expect("spawn flint-sh");
+    let mut child = cmd.spawn().expect("spawn sh");
     if let Some(input) = stdin {
         child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
     }
@@ -311,7 +311,7 @@ fn scripts_stdin_and_background() {
     let o = run_args(&t.0, &[], Some("cat & wait\necho end\n"));
     assert_eq!(o.stdout, "end\n");
     let o = run_args(Path::new("/"), &["--version"], None);
-    assert!(o.stdout.starts_with("flint-sh (Flint Linux"), "{}", o.stdout);
+    assert!(o.stdout.starts_with("sh (Flint Linux"), "{}", o.stdout);
 }
 
 #[test]

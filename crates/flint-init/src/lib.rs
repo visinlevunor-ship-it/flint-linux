@@ -1,8 +1,8 @@
-//! flint-init: PID 1 for Flint Linux.
+//! init: PID 1 for Flint Linux.
 //!
 //! Boot: mount pseudo filesystems, run /etc/flint/boot tasks, then supervise
 //! the services in /etc/flint/services. Shutdown is requested with signals
-//! (see `flint_core::PowerAction`; `flint-power` sends them).
+//! (see `flint_core::PowerAction`; `poweroff`, `reboot` and `halt` send them).
 
 mod boot;
 mod config;
@@ -13,7 +13,6 @@ mod supervisor;
 use std::env;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
-use std::process::ExitCode;
 use std::thread;
 use std::time::Duration;
 
@@ -23,35 +22,36 @@ use supervisor::Supervisor;
 const CONFIG_DIR: &str = "/etc/flint";
 const PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
-fn main() -> ExitCode {
+/// Entry point; `args[0]` is the name the program was started as.
+pub fn main(args: Vec<String>) -> i32 {
     if std::process::id() == 1 {
         // The kernel passes unknown command-line words to init as arguments: ignore them all.
         run();
     }
-    cli()
+    cli(&args)
 }
 
 /// Everything except running as init is a harmless diagnostic.
-fn cli() -> ExitCode {
-    let args: Vec<String> = env::args().skip(1).collect();
+fn cli(argv: &[String]) -> i32 {
+    let args: Vec<String> = argv.iter().skip(1).cloned().collect();
     match args.first().map(String::as_str) {
         Some("-V" | "--version") => {
             println!("{}", version::long());
-            ExitCode::SUCCESS
+            0
         }
         Some("--check") => check(args.get(1).map_or(CONFIG_DIR, String::as_str)),
         _ => {
             eprintln!(
-                "flint-init is the system init and only runs as PID 1.\n\
-                 usage: flint-init --version | --check [CONFIG_DIR]"
+                "init is the system init and only runs as PID 1.\n\
+                 usage: init --version | --check [CONFIG_DIR]"
             );
-            ExitCode::from(2)
+            2
         }
     }
 }
 
 /// Validate the config files without booting.
-fn check(dir: &str) -> ExitCode {
+fn check(dir: &str) -> i32 {
     let dir_path = Path::new(dir);
     let mut ok = true;
     match config::load_services(dir_path) {
@@ -71,14 +71,14 @@ fn check(dir: &str) -> ExitCode {
         }
     }
     if ok {
-        ExitCode::SUCCESS
+        0
     } else {
-        ExitCode::FAILURE
+        1
     }
 }
 
 fn run() -> ! {
-    log::init("flint-init");
+    log::init("init");
     env::set_var("PATH", PATH);
 
     // Block first so no signal is lost while booting.

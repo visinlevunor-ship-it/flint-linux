@@ -1,5 +1,5 @@
 #!/bin/sh
-# Example package for flint-pkg.
+# Example package for pkg.
 name=world
 [ -r /etc/greet.conf ] && . /etc/greet.conf
 cat /usr/share/greet/message

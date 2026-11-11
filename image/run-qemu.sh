@@ -5,7 +5,7 @@
 #
 # Environment:
 #   KERNEL   (required) Linux x86_64 kernel image (bzImage / vmlinuz)
-#   INITRD   initramfs to boot        (default target/flint-initramfs.cpio.gz)
+#   INITRD   initramfs to boot        (default target/flint-base.img)
 #   MEM      guest memory             (default 256M)
 #   ACCEL    extra qemu acceleration flags, e.g. "-enable-kvm" on a Linux host
 #   APPEND   extra kernel command line words
@@ -14,7 +14,7 @@
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-INITRD=${INITRD:-$ROOT/target/flint-initramfs.cpio.gz}
+INITRD=${INITRD:-$ROOT/target/flint-base.img}
 : "${KERNEL:?set KERNEL to a Linux x86_64 kernel image}"
 
 # shellcheck disable=SC2086

@@ -71,7 +71,7 @@ pub fn parse(args: &[String], flags: &str, valued: &str) -> Result<Parsed, Strin
     Ok(p)
 }
 
-/// Report a write error to stdout. A closed pipe (`flint-box ls | head`) is not an error.
+/// Report a write error to stdout. A closed pipe (`ls | head`) is not an error.
 pub fn finish_output(prog: &str, r: io::Result<()>) -> i32 {
     match r {
         Ok(()) => 0,

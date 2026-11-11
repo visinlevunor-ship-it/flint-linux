@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """End-to-end test: boot the Flint image in QEMU and drive it over the serial console.
 
-Checks login (good and bad), privilege dropping, the shell's job control, flint-box, su,
-passwd, flint-pkg and poweroff. Works on Linux and FreeBSD hosts (software emulation is slow: allow minutes).
+Checks login (good and bad), privilege dropping, the shell's job control, the core tools, su,
+passwd, pkg and poweroff. Works on Linux and FreeBSD hosts (software emulation is slow: allow minutes).
 
   KERNEL=/path/to/bzImage tests/qemu/session.py [initramfs.cpio.gz]
 
@@ -13,7 +13,7 @@ import os, select, subprocess, sys, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 KERNEL = os.environ.get("KERNEL") or sys.exit("set KERNEL to a Linux x86_64 kernel image")
-INITRD = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "target", "flint-initramfs.cpio.gz")
+INITRD = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "target", "flint-base.img")
 QEMU = os.environ.get("QEMU", "qemu-system-x86_64")
 SLOW = float(os.environ.get("SLOW", "1"))
 
@@ -83,7 +83,7 @@ def step(name):
 
 q = Q()
 try:
-    q.expect("Flint Linux 0.", 120); step("boot, flint-init banner")
+    q.expect("Flint Linux 0.", 120); step("boot, init banner")
     q.expect("login: ", 120); step("login prompt appears")
 
     q.send("root\n"); q.expect("Password: "); q.send("wrongpassword\n")
@@ -91,20 +91,21 @@ try:
     q.send("ghost\n"); q.expect("Password: "); q.send("whatever\n")
     q.expect("Login incorrect", 30); q.expect("login: "); step("unknown user is refused")
 
-    q.login("root", "flint", "root@flint:~# "); step("root logs in; flint-sh prompt shows user, host and ~")
+    q.login("root", "flint", "root@flint:~# "); step("root logs in; sh prompt shows user, host and ~")
     q.sh("echo R-$((6*7))", "R-42"); step("shell arithmetic")
-    q.sh("echo B-$(/bin/flint-box --list | wc -l)", "B-30"); step("flint-box has 30 applets")
-    q.sh("/bin/id", "uid=0(root) gid=0(root) groups=0(root)"); step("flint-box id (root)")
+    q.sh("echo B-$(flint --list | wc -l) L-$(ls /bin /sbin | grep -c '^flint-')", "B-38 L-0"); step("one flint binary, 38 programs, no flint-* commands")
+    q.sh("echo P-$(readlink /bin/pkg) S-$(readlink /bin/sh) I-$(readlink /sbin/init)", "P-flint S-flint I-../bin/flint"); step("pkg, sh and init are links to flint")
+    q.sh("/bin/id", "uid=0(root) gid=0(root) groups=0(root)"); step("id (root)")
     q.sh('echo "E-$HOME|$USER|$LOGNAME|$SHELL|$TERM"', "E-/root|root|root|/bin/sh|linux"); step("root environment")
     q.sh("/bin/ls -l /dev/ttyS0", "crw--w----"); step("tty handed to the user (mode 620)")
-    q.sh("/bin/ls -l /bin/su /bin/passwd /bin/flint-box", "-rwxr-xr-x"); q.expect("-rwsr-xr-x"); q.expect("-rwsr-xr-x")
-    step("flint-box is not setuid; passwd and su are")
-    q.sh("/bin/mkdir /mnt && /bin/mount -t tmpfs -o size=1m tmpfs /mnt && /bin/mount", "tmpfs on /mnt type tmpfs (rw,relatime,size=1024k"); step("flint-box mount")
+    q.sh("/bin/ls -l /bin/flint /bin/passwd /bin/su", "-rwxr-xr-x"); q.expect("-rwsr-xr-x"); q.expect("-rwsr-xr-x")
+    step("flint is not setuid; passwd and su are")
+    q.sh("/bin/mkdir /mnt && /bin/mount -t tmpfs -o size=1m tmpfs /mnt && /bin/mount", "tmpfs on /mnt type tmpfs (rw,relatime,size=1024k"); step("mount")
     q.sh("echo data42 > /mnt/f; echo M-$(/bin/cat /mnt/f)", "M-data42"); step("redirect and cat on the mount")
-    q.sh("/bin/umount /mnt; echo C-$(grep -c ' /mnt ' /proc/self/mounts)", "C-0"); step("flint-box umount")
-    q.sh("/bin/ps", "COMMAND"); q.expect("/init"); step("flint-box ps shows /init as PID 1")
+    q.sh("/bin/umount /mnt; echo C-$(grep -c ' /mnt ' /proc/self/mounts)", "C-0"); step("umount")
+    q.sh("/bin/ps", "COMMAND"); q.expect("/init"); step("ps shows /init as PID 1")
     q.sh("cd /tmp && /bin/mkdir -p a/b && echo x > a/b/f && /bin/cp -r a z && /bin/mv z y && /bin/ls y/b && /bin/rm -r a y; echo L-$(/bin/ls /tmp | /bin/wc -l)", "L-0"); step("mkdir/cp/mv/ls/rm chain")
-    q.sh("sh -c 'for i in 1 2 3; do printf \"%s.\" $i; done; echo end'", "1.2.3.end"); step("flint-sh runs scripts (-c)")
+    q.sh("sh -c 'for i in 1 2 3; do printf \"%s.\" $i; done; echo end'", "1.2.3.end"); step("sh runs scripts (-c)")
     q.sh("f() { echo \"fn:$1\"; }; f ok", "fn:ok"); step("shell functions")
 
     # job control over the serial tty
@@ -123,7 +124,7 @@ try:
     q.sh("echo V-$PATH", "V-/usr/local/bin:/usr/bin:/bin"); step("non-root PATH")
     q.sh("/bin/touch ~/f; echo O-$(stat -c %U ~/f)", "O-flint"); step("home is writable and owned by the user")
     q.sh("/bin/cat /etc/shadow", "Permission denied (os error 13)"); step("shadow is unreadable by a normal user")
-    q.sh("flint-pkg install hello", "Permission denied"); step("flint-pkg: a normal user cannot install")
+    q.sh("pkg install hello", "Permission denied"); step("pkg: a normal user cannot install")
 
     # su
     q.sh("/bin/su root", "Password: "); q.send("wrongpw\n"); q.expect("Authentication failure", 30)
@@ -147,16 +148,16 @@ try:
     q.sh("echo RS-$(/bin/su flint -c '/bin/id -u')", "RS-1000"); step("root can su to a user without a password")
     q.sh("echo LH-$(/bin/su - flint -c 'echo $HOME:$USER')", "LH-/home/flint:flint"); step("su - gives a login environment")
 
-    # flint-pkg with the example repository built into the image
-    q.sh("echo PL-$(flint-pkg list | wc -l)", "PL-0"); step("flint-pkg: nothing installed yet")
-    q.sh("flint-pkg search hello", "hello 1.0 - Example program installed with flint-pkg"); step("flint-pkg search")
-    q.sh("flint-pkg install hello", "will install: greet-data 1.0, hello 1.0"); q.expect("2 package(s) installed", 60)
-    step("flint-pkg install pulls in the dependency")
+    # pkg with the example repository built into the image
+    q.sh("echo PL-$(pkg list | wc -l)", "PL-0"); step("pkg: nothing installed yet")
+    q.sh("pkg search hello", "hello 1.0 - Example program installed with pkg"); step("pkg search")
+    q.sh("pkg install hello", "will install: greet-data 1.0, hello 1.0"); q.expect("2 package(s) installed", 60)
+    step("pkg install pulls in the dependency")
     q.sh("hello", "Hello from a Flint package!"); q.expect("hello, world"); step("the installed program runs")
     q.sh("echo name=flint > /etc/greet.conf; hello", "hello, flint"); step("its config file is honoured")
-    q.sh("flint-pkg verify", "greet-data: modified config: /etc/greet.conf"); step("flint-pkg verify notices the edit")
-    q.sh("flint-pkg remove greet-data", "required by hello"); step("flint-pkg refuses to remove a needed package")
-    q.sh("flint-pkg remove hello && flint-pkg autoremove", "removing greet-data"); q.expect("kept modified config file /etc/greet.conf")
+    q.sh("pkg verify", "greet-data: modified config: /etc/greet.conf"); step("pkg verify notices the edit")
+    q.sh("pkg remove greet-data", "required by hello"); step("pkg refuses to remove a needed package")
+    q.sh("pkg remove hello && pkg autoremove", "removing greet-data"); q.expect("kept modified config file /etc/greet.conf")
     step("remove + autoremove, keeping the edited config")
     q.sh("echo H-$(command -v hello || echo gone) C-$(cat /etc/greet.conf)", "H-gone C-name=flint"); step("files are gone, the edited config stays")
     q.send("poweroff\n")

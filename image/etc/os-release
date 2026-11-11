@@ -1,0 +1,6 @@
+NAME="Flint Linux"
+ID=flint
+VERSION_ID=@VERSION@
+PRETTY_NAME="Flint Linux @VERSION@"
+HOME_URL="https://github.com/visinlevunor-ship-it/flint-linux"
+SUPPORT_URL="https://www.patreon.com/c/FlintLinux/membership"

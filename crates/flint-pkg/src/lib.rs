@@ -1,4 +1,4 @@
-//! flint-pkg: Flint's package manager.
+//! pkg: Flint's package manager.
 
 mod control;
 mod db;
@@ -11,7 +11,6 @@ mod version;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
 
 use control::{IndexEntry, THIS_ARCH};
 use db::{Db, Installed};
@@ -19,7 +18,7 @@ use ops::{install_step, remove_pkg, verify, Ctx, Lock};
 use resolve::{autoremovable, load_repos, plan_install, plan_remove, plan_upgrade, repo_dirs_from_conf, Repo, Request};
 use version::{compare, Constraint};
 
-const USAGE: &str = "usage: flint-pkg [--root DIR] [--repo DIR]... [-n|--dry-run] [-f|--force] COMMAND [ARGS]
+const USAGE: &str = "usage: pkg [--root DIR] [--repo DIR]... [-n|--dry-run] [-f|--force] COMMAND [ARGS]
 
   install PKG...      install packages (names, name>=1.0, or .fpk files) with their dependencies
   remove PKG...       remove packages (refuses if others need them, unless --force)
@@ -45,12 +44,13 @@ struct Opts {
     dry_run: bool,
 }
 
-fn main() -> ExitCode {
-    match run() {
+/// Entry point; `args[0]` is the name the program was started as.
+pub fn main(args: Vec<String>) -> i32 {
+    match run(args) {
         Ok(code) => code,
         Err(msg) => {
-            eprintln!("flint-pkg: {msg}");
-            ExitCode::FAILURE
+            eprintln!("pkg: {msg}");
+            1
         }
     }
 }
@@ -142,8 +142,8 @@ fn newest_available(o: &Opts, name: &str) -> Option<IndexEntry> {
     best
 }
 
-fn run() -> Result<ExitCode, String> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+fn run(argv: Vec<String>) -> Result<i32, String> {
+    let args: Vec<String> = argv.into_iter().skip(1).collect();
     let mut o = Opts { root: PathBuf::from("/"), repos: Vec::new(), force: false, dry_run: false };
     let mut i = 0;
     while i < args.len() && args[i].starts_with('-') {
@@ -160,11 +160,11 @@ fn run() -> Result<ExitCode, String> {
             "-f" | "--force" => o.force = true,
             "-h" | "--help" => {
                 println!("{USAGE}");
-                return Ok(ExitCode::SUCCESS);
+                return Ok(0);
             }
             "--version" => {
-                println!("flint-pkg {}", env!("CARGO_PKG_VERSION"));
-                return Ok(ExitCode::SUCCESS);
+                println!("pkg ({})", flint_core::version::Long);
+                return Ok(0);
             }
             other => return Err(format!("unknown option {other}\n{USAGE}")),
         }
@@ -172,7 +172,7 @@ fn run() -> Result<ExitCode, String> {
     }
     let Some(cmd) = args.get(i).map(String::as_str) else {
         eprintln!("{USAGE}");
-        return Ok(ExitCode::from(2));
+        return Ok(2);
     };
     let rest = &args[i + 1..];
     if let Some(bad) = rest.iter().find(|a| a.starts_with('-') && a.len() > 1) {
@@ -187,19 +187,19 @@ fn run() -> Result<ExitCode, String> {
 
     match cmd {
         "build" => {
-            let src = rest.first().ok_or("usage: flint-pkg build SRC [OUT]")?;
+            let src = rest.first().ok_or("usage: pkg build SRC [OUT]")?;
             let out = rest.get(1).map_or(Path::new("."), |s| Path::new(s.as_str()));
             let (path, sha, size) = pack::build(Path::new(src), out)?;
             println!("built {} ({size} bytes, sha256 {sha})", path.display());
         }
         "index" => {
-            let dir = rest.first().ok_or("usage: flint-pkg index DIR")?;
+            let dir = rest.first().ok_or("usage: pkg index DIR")?;
             let n = pack::write_index(Path::new(dir))?;
             println!("wrote {}/INDEX with {n} package(s)", dir.trim_end_matches('/'));
         }
         "install" => {
             if rest.is_empty() {
-                return Err("usage: flint-pkg install PKG...".into());
+                return Err("usage: pkg install PKG...".into());
             }
             let mut reqs = Vec::new();
             for a in rest {
@@ -226,7 +226,7 @@ fn run() -> Result<ExitCode, String> {
         }
         "remove" | "del" => {
             if rest.is_empty() {
-                return Err("usage: flint-pkg remove PKG...".into());
+                return Err("usage: pkg remove PKG...".into());
             }
             do_remove(&o, rest, &db.all()?)?;
         }
@@ -245,26 +245,26 @@ fn run() -> Result<ExitCode, String> {
             }
         }
         "files" => {
-            let name = rest.first().ok_or("usage: flint-pkg files PKG")?;
+            let name = rest.first().ok_or("usage: pkg files PKG")?;
             let p = db.load(name)?.ok_or_else(|| format!("{name} is not installed"))?;
             for f in &p.files {
                 println!("/{}", f.path);
             }
         }
         "owns" => {
-            let path = rest.first().ok_or("usage: flint-pkg owns PATH")?;
+            let path = rest.first().ok_or("usage: pkg owns PATH")?;
             let rel = paths::normalize_rel(path.trim_start_matches('/'))?;
             for p in db.all()? {
                 if p.files.iter().any(|f| f.path == rel && f.kind != 'd') {
                     println!("/{rel} is owned by {} {}", p.control.name, p.control.version);
-                    return Ok(ExitCode::SUCCESS);
+                    return Ok(0);
                 }
             }
             println!("/{rel} is not owned by any package");
-            return Ok(ExitCode::FAILURE);
+            return Ok(1);
         }
         "info" => {
-            let name = rest.first().ok_or("usage: flint-pkg info PKG")?;
+            let name = rest.first().ok_or("usage: pkg info PKG")?;
             let installed = db.load(name)?;
             let available = newest_available(&o, name);
             let Some(c) = installed.as_ref().map(|i| &i.control).or(available.as_ref().map(|a| &a.control)) else {
@@ -288,7 +288,7 @@ fn run() -> Result<ExitCode, String> {
             }
         }
         "search" => {
-            let term = rest.first().ok_or("usage: flint-pkg search TERM")?.to_lowercase();
+            let term = rest.first().ok_or("usage: pkg search TERM")?.to_lowercase();
             let installed = db.all()?;
             let mut all: Vec<control::Control> = repos(&o).map(|rs| rs.into_iter().flat_map(|r| r.entries.into_iter().map(|e| e.control)).collect()).unwrap_or_default();
             all.extend(installed.iter().map(|i| i.control.clone()));
@@ -303,7 +303,7 @@ fn run() -> Result<ExitCode, String> {
                 }
             }
             if !found {
-                return Ok(ExitCode::FAILURE);
+                return Ok(1);
             }
         }
         "verify" => {
@@ -328,7 +328,7 @@ fn run() -> Result<ExitCode, String> {
                 println!("verified {checked} package(s): all files match");
             } else {
                 println!("{bad} problem(s) found");
-                return Ok(ExitCode::FAILURE);
+                return Ok(1);
             }
         }
         "repos" => {
@@ -339,5 +339,5 @@ fn run() -> Result<ExitCode, String> {
         "help" => println!("{USAGE}\n\nthis system: {THIS_ARCH}"),
         other => return Err(format!("unknown command '{other}'\n{USAGE}")),
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(0)
 }

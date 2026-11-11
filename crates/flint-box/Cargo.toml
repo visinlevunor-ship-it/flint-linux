@@ -3,11 +3,7 @@ name = "flint-box"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Flint's multicall toolbox: ls, cat, cp, mount, ... in one binary"
-
-[[bin]]
-name = "flint-box"
-path = "src/main.rs"
+description = "Flint's core tools (ls, cat, cp, mount, ...), run through the flint binary"
 
 [dependencies]
 flint-auth = { path = "../flint-auth" }

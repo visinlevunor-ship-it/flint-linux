@@ -11,7 +11,7 @@
 
 use std::fs;
 use std::os::unix::process::CommandExt;
-use std::process::{Command, ExitCode};
+use std::process::{Command};
 use std::thread;
 use std::time::Duration;
 
@@ -101,12 +101,16 @@ fn shell_listed(shells_file: &str, shell: &str) -> bool {
     shells_file.lines().map(str::trim).any(|l| !l.is_empty() && !l.starts_with('#') && l == shell)
 }
 
-fn fail(msg: &str) -> ExitCode {
+fn fail(msg: &str) -> i32 {
     eprintln!("su: {msg}");
-    ExitCode::FAILURE
+    1
 }
 
-fn main() -> ExitCode {
+fn main() {
+    std::process::exit(run());
+}
+
+fn run() -> i32 {
     // SAFETY: plain libc queries.
     let (caller_uid, effective) = unsafe { (libc::getuid(), libc::geteuid()) };
     if effective != 0 {
@@ -118,7 +122,7 @@ fn main() -> ExitCode {
         Ok(o) => o,
         Err(msg) => {
             eprintln!("{msg}");
-            return ExitCode::from(2);
+            return 2;
         }
     };
 
@@ -150,7 +154,7 @@ fn main() -> ExitCode {
         }
         let shadow = fs::read_to_string("/etc/shadow").unwrap_or_default();
         let stored = shadow_hash(&shadow, &target.name).unwrap_or("");
-        let Some(password) = read_secret("Password: ") else { return ExitCode::FAILURE };
+        let Some(password) = read_secret("Password: ") else { return 1 };
         let ok = !is_locked(stored) && verify(&password, stored) == Ok(true);
         if !ok {
             thread::sleep(WRONG_PASSWORD_DELAY);

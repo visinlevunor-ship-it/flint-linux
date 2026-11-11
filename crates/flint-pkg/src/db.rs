@@ -1,5 +1,5 @@
 //! The installed-package database: one text file per package under
-//! `<root>/var/lib/flint-pkg/installed/`.
+//! `<root>/var/lib/pkg/installed/`.
 
 use std::fs;
 use std::io::Write;
@@ -62,7 +62,7 @@ impl Installed {
 
 impl Db {
     pub fn open(root: &Path) -> Db {
-        Db { dir: root.join("var/lib/flint-pkg/installed") }
+        Db { dir: root.join("var/lib/pkg/installed") }
     }
 
     fn file(&self, name: &str) -> PathBuf {

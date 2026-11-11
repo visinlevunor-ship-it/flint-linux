@@ -1,0 +1,19 @@
+[package]
+name = "flint-apps"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "The flint multicall binary: every Flint program, installed under its normal name (sh, pkg, init, ls, ...)"
+
+[[bin]]
+name = "flint"
+path = "src/main.rs"
+
+[dependencies]
+flint-core.workspace = true
+flint-box = { path = "../flint-box" }
+flint-init = { path = "../flint-init" }
+flint-login = { path = "../flint-login" }
+flint-pkg = { path = "../flint-pkg" }
+flint-power = { path = "../flint-power" }
+flint-sh = { path = "../flint-sh" }
