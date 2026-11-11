@@ -242,6 +242,8 @@ fn head_tail_wc() {
     assert_eq!(run(&["tail", "-n", "2", &t.s("n")]).stdout, "4\n5\n");
     assert_eq!(run(&["tail", "-n", "+4", &t.s("n")]).stdout, "4\n5\n");
     assert_eq!(run_stdin(&["head", "-n1"], "x\ny\n").stdout, "x\n");
+    assert_eq!(run_stdin(&["head", "-1"], "x\ny\n").stdout, "x\n");
+    assert_eq!(run_stdin(&["tail", "-1"], "x\ny\n").stdout, "y\n");
     assert_eq!(run(&["head", &t.s("n")]).stdout, "1\n2\n3\n4\n5\n");
     let two = run(&["head", "-n", "1", &t.s("n"), &t.s("n")]);
     assert!(two.stdout.contains("==> ") && two.stdout.matches("1\n").count() >= 2, "{}", two.stdout);

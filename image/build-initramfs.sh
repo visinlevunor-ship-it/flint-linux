@@ -78,12 +78,13 @@ fi
 cp "$BUSYBOX" "$RFS/bin/busybox"
 chmod 755 "$RFS/bin/busybox"
 for a in dmesg free date grep sed awk find sort uniq tr cut xargs less vi tee basename dirname \
-         which readlink stat df du mknod mkfifo lsmod; do
+         which readlink stat df du mknod mkfifo; do
     [ -e "$RFS/bin/$a" ] || [ -h "$RFS/bin/$a" ] || ln -s busybox "$RFS/bin/$a"
 done
 
 cp "$BOOT" "$RFS/etc/flint/boot"
 cp "$SERVICES" "$RFS/etc/flint/services"
+cp "$ROOT/image/etc/flint/modules.blacklist" "$RFS/etc/flint/modules.blacklist"
 echo "flint" > "$RFS/etc/hostname"
 for f in passwd group shadow motd shells os-release; do
     cp "$ROOT/image/etc/$f" "$RFS/etc/$f"

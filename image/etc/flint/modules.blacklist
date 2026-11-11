@@ -1,0 +1,6 @@
+# Modules modload and devd never load automatically (one per line).
+# The PC speaker beeps on every tab completion and error.
+pcspkr
+snd_pcsp
+# Probing a floppy controller that is not there takes seconds on some boards.
+floppy

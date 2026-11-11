@@ -5,6 +5,7 @@ bin chmod
 bin chown
 bin clear
 bin cp
+sbin devd
 bin echo
 bin env
 bin false
@@ -17,7 +18,11 @@ bin kill
 bin ln
 sbin login
 bin ls
+bin lsmod
 bin mkdir
+sbin modload
+sbin modprobe
+sbin mountboot
 bin mount
 bin mv
 bin pkg

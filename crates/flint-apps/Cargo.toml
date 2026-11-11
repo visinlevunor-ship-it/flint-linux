@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 flint-core.workspace = true
 flint-box = { path = "../flint-box" }
+flint-dev = { path = "../flint-dev" }
 flint-init = { path = "../flint-init" }
 flint-login = { path = "../flint-login" }
 flint-pkg = { path = "../flint-pkg" }

@@ -1,4 +1,9 @@
-# Boot tasks: one command per line, run in order (each waited for, 30 s limit)
-# before services start. No shell and no quoting.
-#
-# /sbin/modload
+# Boot tasks: one command per line, run in order (each waited for, 30 s limit) before
+# services start. No shell and no quoting.
+
+# Drivers for every device present (storage, input, network, Wi-Fi, ...).
+/sbin/modload --coldplug --wait 10
+# The partition Flint booted from, at /boot: saved settings live there.
+/sbin/mountboot --wait 15
+/bin/mkdir -p /home/flint
+/bin/chown 1000:1000 /home/flint

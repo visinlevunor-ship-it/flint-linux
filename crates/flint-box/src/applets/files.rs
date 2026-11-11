@@ -108,7 +108,23 @@ fn parse_count(prog: &str, s: &str) -> Option<(usize, bool)> {
     }
 }
 
+/// The historical `head -20` / `tail -5` form means `-n 20` / `-n 5`.
+fn obsolete_count(args: &[String]) -> Vec<String> {
+    args.iter()
+        .enumerate()
+        .flat_map(|(i, a)| {
+            let digits = a.len() > 1 && a.starts_with('-') && a[1..].bytes().all(|b| b.is_ascii_digit());
+            if i == 0 && digits {
+                vec!["-n".to_string(), a[1..].to_string()]
+            } else {
+                vec![a.clone()]
+            }
+        })
+        .collect()
+}
+
 fn head_tail(prog: &str, args: &[String], is_head: bool) -> i32 {
+    let args = &obsolete_count(args);
     let Some(p) = parse_or_report(prog, args, "", "n") else { return 1 };
     let Some((n, plus)) = parse_count(prog, p.value('n').unwrap_or("10")) else { return 1 };
     let files = if p.operands.is_empty() { vec!["-".to_string()] } else { p.operands.clone() };

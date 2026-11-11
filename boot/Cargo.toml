@@ -1,0 +1,28 @@
+# Flint's UEFI bootloader. A workspace of its own: it is built for the UEFI target, not Linux.
+#
+#   rustup target add x86_64-unknown-uefi
+#   cargo build --release --target x86_64-unknown-uefi
+#   -> target/x86_64-unknown-uefi/release/flint-boot.efi
+[package]
+name = "flint-boot"
+version = "0.6.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Flint Linux UEFI bootloader: menu, loads the Linux kernel and initramfs images from the EFI system partition"
+license = "MIT"
+
+[[bin]]
+name = "flint-boot"
+path = "src/main.rs"
+bench = false
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true
+codegen-units = 1
+
+[workspace]

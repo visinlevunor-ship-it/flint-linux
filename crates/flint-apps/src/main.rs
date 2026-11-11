@@ -9,9 +9,14 @@ use std::path::Path;
 
 /// Programs other than the core tools from flint-box.
 const PROGRAMS: &[(&str, fn(Vec<String>) -> i32)] = &[
+    ("devd", flint_dev::devd),
     ("halt", flint_power::main),
     ("init", flint_init::main),
     ("login", flint_login::main),
+    ("lsmod", flint_dev::lsmod),
+    ("modload", flint_dev::modload),
+    ("modprobe", flint_dev::modprobe),
+    ("mountboot", flint_dev::mountboot),
     ("pkg", flint_pkg::main),
     ("power", flint_power::main),
     ("poweroff", flint_power::main),
