@@ -4,7 +4,7 @@ A small Linux distribution with a from-scratch userland written in Rust. Only th
 
 [![Support Flint on Patreon](https://img.shields.io/badge/Patreon-support%20Flint-f96854?logo=patreon&logoColor=white)](https://www.patreon.com/c/FlintLinux/membership)
 
-**Status: 0.6, early development.** Flint boots on real PCs and laptops from a USB stick with its own UEFI bootloader, loads the drivers for whatever hardware it finds, and gets on the network by itself: wired with DHCP, or Wi-Fi with WPA2. It runs from RAM as a live system; there is no installer yet.
+**Status: 0.7, early development.** Flint boots on real PCs and laptops from a USB stick with its own UEFI bootloader, loads the drivers for whatever hardware it finds, and gets on the network by itself: wired with DHCP, or Wi-Fi with WPA2. Packages install over HTTPS from signed repositories (`pkg install fastfetch`). Every program in the base system is Flint's own; busybox is gone. It runs from RAM as a live system; there is no installer yet.
 
 ## What works today
 
@@ -19,14 +19,15 @@ Every Flint program is one binary, `/bin/flint`, installed under normal names: `
 | `netd` | network daemon: DHCP on wired interfaces, joins saved Wi-Fi networks, WPA2 handshake and rekeys, DNS servers | tested in QEMU (wired, simulated Wi-Fi) |
 | `net`, `ping` | network status, `net wifi scan / connect / list / forget`; ping with Flint's own DNS resolver | tested in QEMU |
 | `login`, `su`, `passwd` | getty + login, privilege switching, password changes | tested in QEMU |
-| `sh` | the shell: POSIX-style scripting, pipelines, redirections, job control | tested in QEMU and on a pty |
-| `pkg` | package manager: dependencies, upgrades, config-file protection, verify | tested in QEMU |
+| `sh` | the shell: POSIX-style scripting, pipelines, redirections, job control; line editor with history, Ctrl-R search and Tab completion | tested in QEMU and on a pty |
+| `pkg` | package manager: dependencies, upgrades, config-file protection, verify; HTTPS repositories with Ed25519-signed indexes | tested in QEMU |
+| `fetch` | downloads over HTTP and HTTPS (Flint's own TLS 1.3 client) | tested in QEMU and against GitHub |
 | `poweroff`, `reboot`, `halt` | ask init to shut down (or `-f` to do it directly) | tested in QEMU |
-| `ls cat cp mv rm mkdir mount ps ...` | core tools (30) | tested in QEMU |
+| `ls cat grep sed awk find vi less ...` | core tools, including `grep`/`sed` with full regular expressions, `awk`, `vi` and `less` | tested in QEMU, compared with GNU grep/sed and mawk |
 | `flint-mkimage` | host tool: initramfs archives, driver and firmware selection, GPT + FAT32 disk images | unit tested, images checked with sgdisk and fsck.vfat |
 | `flint-rt`, `flint-version` | libc replacement for `no_std` programs, and the first program on it | tested in QEMU |
 
-Not written yet: an installer, a line editor for `sh`, network repositories for `pkg`, WPA3-only and enterprise Wi-Fi.
+Not written yet: an installer, WPA3-only and enterprise Wi-Fi.
 
 ## Boot it on a PC
 
@@ -42,7 +43,7 @@ cargo build --release -p flint-mkimage -p flint-pkg                     # host t
 (cd boot && cargo build --release --target x86_64-unknown-uefi)         # the bootloader
 
 image/fetch-kernel.sh                                    # Linux 7.0 + firmware (Ubuntu packages, checksummed)
-BUSYBOX=/path/to/static-busybox image/build-disk.sh      # -> target/flint.img (512 MiB)
+image/build-disk.sh                                      # -> target/flint.img (512 MiB)
 ```
 
 Write `target/flint.img` to a USB stick (this erases the stick), then boot from it (the boot menu key is often F12, F10 or Esc):
@@ -70,7 +71,7 @@ The boot menu is `\FLINT\BOOT.CFG` on the stick; it is a plain text file you can
 ## Quick start (QEMU)
 
 ```sh
-BUSYBOX=/path/to/static-busybox image/build-initramfs.sh
+image/build-initramfs.sh
 KERNEL=/path/to/bzImage image/run-qemu.sh          # Ctrl-A then X quits QEMU
 ```
 
@@ -96,11 +97,33 @@ pkg verify                              # compare files with recorded checksums
 pkg remove hello && pkg autoremove
 ```
 
-Repositories come from `--repo DIR` and from `/etc/flint/pkg.conf` (`repo /path/to/dir` lines). `--root DIR` installs into another tree, so packages can be tested without root. `-n` shows what would happen. See `packages/README.md` for the control file format.
+Repositories come from `--repo DIR-OR-URL` and from `/etc/flint/pkg.conf` (`repo /path/to/dir` or `repo https://host/path` lines). `--root DIR` installs into another tree, so packages can be tested without root. `-n` shows what would happen. See `packages/README.md` for the control file format.
+
+### Repositories on the internet
+
+The image points at the Flint package repository on GitHub, so on a running system:
+
+```sh
+pkg install fastfetch       # fetches the signed package list, downloads, checks, installs
+fastfetch
+pkg update                  # refresh the package lists by hand (install and upgrade do it too)
+```
+
+A remote repository is a directory served over HTTPS (or HTTP) with the packages, `INDEX` and `INDEX.sig`. To publish one:
+
+```sh
+pkg key new flint ~/keys            # once: ~/keys/flint.key (secret, keep it off the repo) and flint.pub
+cp ~/keys/flint.pub image/etc/flint/keys/   # images built from now on trust it
+pkg build SRC repo/x86_64/ && pkg index repo/x86_64/
+pkg sign repo/x86_64/ ~/keys/flint.key      # writes INDEX.sig; sign again after every index
+```
+
+`ports/` holds recipes that build third-party programs (as static binaries) into package sources, e.g. `ports/fastfetch/build.sh OUT && pkg build OUT repo/x86_64/`.
 
 How it stays safe:
 
 - A package is a plain ustar archive with a `.FLINTPKG` control entry first; the repository `INDEX` records each file's size and SHA-256, and a package that does not match is refused.
+- A remote `INDEX` is only used if `INDEX.sig` is a valid Ed25519 signature by a key in `/etc/flint/keys/`, and never if it is older than the last one accepted (a timestamp in the signed header), so a mirror cannot hand out an old list with old packages. HTTPS protects privacy in transit, but the trust comes from the signature: the TLS certificate is not what pkg relies on.
 - Paths are checked before anything is written: no absolute paths, no `..`, nothing below a symlink from the same package, and nothing written through a symlink that leads out of the install root.
 - A file owned by another package, or an existing file that belongs to no package, is a conflict (`--force` overrides the second).
 - Each file is written to a temporary name and renamed into place; a fresh install that fails half way is rolled back; the database record is written last.
@@ -115,8 +138,10 @@ tests/pty/jobcontrol.py target/debug/flint      # interactive sh on a real pty (
 KERNEL=/path/to/bzImage tests/qemu/session.py   # full QEMU session over the serial console
 ```
 
-- `cargo test` runs the unit tests plus integration tests that execute the real `flint` and `pkg` binaries. They include hostile packages, the cryptography test vectors from the standards (SHA-1, HMAC, PBKDF2, the 802.11 PRF, AES key wrap), and a full WPA2 handshake against a simulated access point, including a wrong password.
+- `cargo test` runs the unit tests plus integration tests that execute the real `flint` and `pkg` binaries. They include hostile packages, remote repositories over a local HTTP server (tampered index, rollback, swapped package, untrusted key), the cryptography test vectors from the standards (SHA-1, SHA-512, HMAC, PBKDF2, the 802.11 PRF, AES key wrap, AES-GCM, X25519, Ed25519, HKDF, the TLS 1.3 key schedule of RFC 8448), and a full WPA2 handshake against a simulated access point, including a wrong password.
+- `tests/pty/lineedit.py` and `tests/pty/jobcontrol.py` drive the interactive shell on a real pseudo-terminal.
 - `tests/qemu/session.py` boots the image and checks login, privilege dropping, `su`, `passwd`, the tools, shell job control, `pkg` and poweroff. QEMU without KVM is slow; set `SLOW=3` to stretch its timeouts.
+- For 0.7, `pkg install fastfetch` was tested in QEMU against an HTTPS repository, and `fetch` against GitHub.
 - For 0.6 the disk image was also booted under OVMF from NVMe, SATA, USB and virtio disks; wired networking was tested with e1000e and rtl8139 network cards; Wi-Fi with `mac80211_hwsim` against `hostapd` (WPA2, wrong password, group rekeys).
 
 ## Layout
@@ -134,11 +159,14 @@ crates/flint-sh        shell
 crates/flint-pkg       package manager
 crates/flint-box       core tools
 crates/flint-dev       driver loading, mountboot
-crates/flint-net       netd, net, ping: DHCP, DNS, Wi-Fi (nl80211, WPA2)
+crates/flint-net       netd, net, ping: DHCP, Wi-Fi (nl80211, WPA2)
+crates/flint-crypto    SHA-512, X25519, Ed25519, AES-GCM, HKDF (pure Rust)
+crates/flint-web       DNS, TLS 1.3 client, HTTP downloads, fetch
 crates/flint-mkimage   host tool: initramfs, drivers, disk images
 boot/                  separate workspace: flint-boot, the UEFI bootloader
 rt/                    separate workspace: flint-rt and libc-free programs
 packages/              example package sources
+ports/                 recipes that build third-party programs into package sources
 image/                 build scripts, boot menu, driver list, default /etc files
 tests/                 pty and QEMU end-to-end tests
 VERSION                the distro version
@@ -160,10 +188,9 @@ VERSION                the distro version
 
 - x86-64 with UEFI only; Secure Boot must be off. Tested in QEMU, not yet on a range of real machines: reports are welcome.
 - It is a live system: everything except saved Wi-Fi networks is lost on reboot. No installer yet.
-- The image still uses busybox for `grep`, `sed`, `date`, `less`, `vi` and a few others.
 - **Wi-Fi:** one network at a time, no WPA3-only or enterprise networks, no IPv6 address configuration yet (IPv6 works on links where the kernel configures it itself).
-- **pkg** reads local directory repositories only (no network yet), does not compress packages, and does not sign them. The base system itself is not packaged.
-- **sh** has no line editor yet: no history or tab completion. Not supported: `trap`, aliases, `set -e`/`-u`/`-x`, arrays, `[[ ]]`, process substitution, `${x/a/b}`.
+- **pkg** does not compress packages yet. The base system itself is not packaged. Third-party programs are static binaries for now (no shared libraries on the system).
+- **sh** does not support `trap`, aliases, `set -e`/`-u`/`-x`, arrays, `[[ ]]`, process substitution, `${x/a/b}`.
 - The image ships a known password. Change it with `passwd` before connecting to networks you do not trust.
 - `cargo test` does not run on non-Linux hosts.
 
