@@ -2,6 +2,8 @@
 
 A small Linux distribution with a from-scratch userland written in Rust. Only the kernel and its modules are upstream; the init system, login, shell, core tools, package manager and account handling are Flint's own.
 
+[![Support Flint on Patreon](https://img.shields.io/badge/Patreon-support%20Flint-f96854?logo=patreon&logoColor=white)](https://www.patreon.com/c/FlintLinux/membership)
+
 **Status: 0.5, early development.** Flint boots in QEMU to a login prompt, a working shell with job control, and a package manager that installs from a local repository. It is not installable on real hardware yet (no installer, no bootloader setup, no networking).
 
 ## What works today
@@ -114,6 +116,10 @@ VERSION                the distro version
 - `flint-box` has 30 applets; some options are missing (for example `head -c`). The image still uses busybox for `grep`, `sed`, `date` and a few others.
 - The dev image ships a known password. Do not use it for anything real.
 - `cargo test` does not run on non-Linux hosts.
+
+## Support
+
+Flint is built in the open. If you want to help it along, you can support it on Patreon: https://www.patreon.com/c/FlintLinux/membership
 
 ## License
 
