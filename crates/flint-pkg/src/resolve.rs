@@ -6,27 +6,50 @@ use std::path::{Path, PathBuf};
 
 use crate::control::{parse_index, Control, IndexEntry, THIS_ARCH};
 use crate::db::Installed;
+use crate::remote::{self, RepoSpec};
 use crate::version::{compare, Constraint};
 
 pub struct Repo {
+    /// Where the packages are: the repository itself, or for a remote one the local cache.
     pub dir: PathBuf,
+    /// The base URL of a remote repository.
+    pub url: Option<String>,
     pub entries: Vec<IndexEntry>,
 }
 
-pub fn load_repos(dirs: &[PathBuf]) -> Result<Vec<Repo>, String> {
+impl Repo {
+    fn source(&self, e: &IndexEntry) -> Source {
+        Source::Repo { path: self.dir.join(&e.file), url: self.url.as_ref().map(|u| format!("{u}/{}", e.file)), size: e.size, sha256: e.sha256.clone() }
+    }
+}
+
+/// Read the INDEX of every repository. A remote repository's INDEX is the verified copy
+/// `pkg update` stored in the cache under `root`; one never fetched is left out.
+pub fn load_repos(root: &Path, specs: &[RepoSpec]) -> Result<Vec<Repo>, String> {
     let mut repos = Vec::new();
-    for dir in dirs {
-        let index = dir.join("INDEX");
-        let text = fs::read_to_string(&index).map_err(|e| format!("repository {}: cannot read INDEX: {e} (create it with: pkg index {})", dir.display(), dir.display()))?;
-        let entries = parse_index(&text).map_err(|e| format!("repository {}: {e}", dir.display()))?;
-        repos.push(Repo { dir: dir.clone(), entries });
+    for spec in specs {
+        match spec {
+            RepoSpec::Local(dir) => {
+                let index = dir.join("INDEX");
+                let text = fs::read_to_string(&index).map_err(|e| format!("repository {}: cannot read INDEX: {e} (create it with: pkg index {})", dir.display(), dir.display()))?;
+                let entries = parse_index(&text).map_err(|e| format!("repository {}: {e}", dir.display()))?;
+                repos.push(Repo { dir: dir.clone(), url: None, entries });
+            }
+            RepoSpec::Remote(url) => {
+                // Never fetched (or the fetch failed): nothing from it is known yet.
+                let Some(text) = remote::cached_index(root, url)? else { continue };
+                let entries = parse_index(&text).map_err(|e| format!("repository {url}: {e}"))?;
+                repos.push(Repo { dir: remote::cache_dir(root, url), url: Some(url.clone()), entries });
+            }
+        }
     }
     Ok(repos)
 }
 
 #[derive(Debug, Clone)]
 pub enum Source {
-    Repo { path: PathBuf, size: u64, sha256: String },
+    /// From a repository; `url` is set when the file still has to be downloaded to `path`.
+    Repo { path: PathBuf, url: Option<String>, size: u64, sha256: String },
     File(PathBuf),
 }
 
@@ -118,7 +141,7 @@ impl<'a> Planner<'a> {
             }
         }
         let (entry, repo) = self.best(c)?;
-        let source = Source::Repo { path: repo.dir.join(&entry.file), size: entry.size, sha256: entry.sha256.clone() };
+        let source = repo.source(entry);
         self.visit_candidate(entry.control.clone(), source, explicit)
     }
 
@@ -181,7 +204,7 @@ pub fn plan_upgrade(names: &[String], installed: &[Installed], repos: &[Repo]) -
         }
         let Ok((entry, repo)) = p.best(&Constraint { name: name.clone(), req: None }) else { continue };
         if compare(&entry.control.version, &inst.control.version).is_gt() {
-            let source = Source::Repo { path: repo.dir.join(&entry.file), size: entry.size, sha256: entry.sha256.clone() };
+            let source = repo.source(entry);
             p.visit_candidate(entry.control.clone(), source, inst.explicit)?;
         }
     }
@@ -243,28 +266,6 @@ pub fn autoremovable(installed: &[Installed]) -> Vec<String> {
     installed.iter().filter(|i| !needed.contains(i.control.name.as_str())).map(|i| i.control.name.clone()).collect()
 }
 
-pub fn repo_dirs_from_conf(text: &str) -> Result<Vec<PathBuf>, String> {
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let line = line.split('#').next().unwrap_or("").trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Some(loc) = line.strip_prefix("repo").map(str::trim) else {
-            return Err(format!("pkg.conf: unknown line '{line}' (expected: repo PATH)"));
-        };
-        let path = loc.strip_prefix("file://").unwrap_or(loc);
-        if path.contains("://") {
-            return Err(format!("pkg.conf: '{loc}': only local directory repositories are supported so far"));
-        }
-        if path.is_empty() {
-            return Err("pkg.conf: 'repo' needs a path".into());
-        }
-        out.push(Path::new(path).to_path_buf());
-    }
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,7 +275,7 @@ mod tests {
     }
 
     fn repo(texts: &[&str]) -> Repo {
-        Repo { dir: PathBuf::from("/repo"), entries: texts.iter().map(|t| entry(t)).collect() }
+        Repo { dir: PathBuf::from("/repo"), url: None, entries: texts.iter().map(|t| entry(t)).collect() }
     }
 
     fn inst(text: &str, explicit: bool) -> Installed {
@@ -368,14 +369,5 @@ mod tests {
         assert_eq!(autoremovable(&have), ["orphan"]);
         let have = [inst("name: lib\nversion: 1\n", false)];
         assert_eq!(autoremovable(&have), ["lib"]);
-    }
-
-    #[test]
-    fn repo_config() {
-        assert_eq!(repo_dirs_from_conf("# c\nrepo /var/repo\nrepo file:///mnt/usb # x\n").unwrap(), [PathBuf::from("/var/repo"), PathBuf::from("/mnt/usb")]);
-        assert!(repo_dirs_from_conf("repo https://example.org/r\n").is_err());
-        assert!(repo_dirs_from_conf("mirror /x\n").is_err());
-        assert!(repo_dirs_from_conf("repo\n").is_err());
-        assert!(repo_dirs_from_conf("").unwrap().is_empty());
     }
 }

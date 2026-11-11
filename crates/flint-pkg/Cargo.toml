@@ -9,6 +9,8 @@ description = "Flint's package manager (pkg). The library runs inside the flint 
 # Only the version module (no std/libc parts), so pkg also builds on non-Linux hosts.
 flint-core = { path = "../flint-core", default-features = false }
 flint-auth = { path = "../flint-auth" }
+flint-crypto = { path = "../flint-crypto" }
+flint-web = { path = "../flint-web" }
 libc.workspace = true
 
 [[bin]]

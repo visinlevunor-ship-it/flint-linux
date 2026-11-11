@@ -87,6 +87,15 @@ sed "s/@VERSION@/$(cat "$ROOT/VERSION")/" "$ROOT/image/etc/os-release" > "$RFS/e
 chmod 644 "$RFS/etc/hosts" "$RFS/etc/passwd" "$RFS/etc/group" "$RFS/etc/motd" "$RFS/etc/shells" "$RFS/etc/os-release"
 chmod 600 "$RFS/etc/shadow"
 
+# Package repositories: the remote ones from image/etc/flint/pkg.conf, trusted through the
+# public keys in image/etc/flint/keys/.
+cp "$ROOT/image/etc/flint/pkg.conf" "$RFS/etc/flint/pkg.conf"
+mkdir -p "$RFS/etc/flint/keys"
+for k in "$ROOT"/image/etc/flint/keys/*.pub; do
+    [ -f "$k" ] && cp "$k" "$RFS/etc/flint/keys/"
+done
+chmod 644 "$RFS/etc/flint/pkg.conf" "$RFS"/etc/flint/keys/* 2>/dev/null || true
+
 # Example package repository from packages/ (optional: needs a pkg for this machine).
 HOSTPKG="$HOSTBIN/pkg"
 if [ -x "$HOSTPKG" ] && "$HOSTPKG" --version >/dev/null 2>&1; then
@@ -98,7 +107,7 @@ if [ -x "$HOSTPKG" ] && "$HOSTPKG" --version >/dev/null 2>&1; then
         fi
     done
     "$HOSTPKG" index "$REPO" >/dev/null
-    echo "repo /var/cache/pkg/repo" > "$RFS/etc/flint/pkg.conf"
+    echo "repo /var/cache/pkg/repo" >> "$RFS/etc/flint/pkg.conf"
 else
     echo "note: no usable pkg for this machine at $HOSTPKG; skipping the example repository" >&2
     echo "      (build one with: cargo build --release -p flint-pkg)" >&2

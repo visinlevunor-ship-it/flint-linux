@@ -5,6 +5,7 @@ mod db;
 mod ops;
 mod pack;
 mod paths;
+mod remote;
 mod resolve;
 mod tar;
 mod version;
@@ -15,11 +16,13 @@ use std::path::{Path, PathBuf};
 use control::{IndexEntry, THIS_ARCH};
 use db::{Db, Installed};
 use ops::{install_step, remove_pkg, verify, Ctx, Lock};
-use resolve::{autoremovable, load_repos, plan_install, plan_remove, plan_upgrade, repo_dirs_from_conf, Repo, Request};
+use remote::RepoSpec;
+use resolve::{autoremovable, load_repos, plan_install, plan_remove, plan_upgrade, Repo, Request, Source};
 use version::{compare, Constraint};
 
-const USAGE: &str = "usage: pkg [--root DIR] [--repo DIR]... [-n|--dry-run] [-f|--force] COMMAND [ARGS]
+const USAGE: &str = "usage: pkg [--root DIR] [--repo DIR-OR-URL]... [-n|--dry-run] [-f|--force] COMMAND [ARGS]
 
+  update              download and verify the package lists of remote repositories
   install PKG...      install packages (names, name>=1.0, or .fpk files) with their dependencies
   remove PKG...       remove packages (refuses if others need them, unless --force)
   upgrade [PKG...]    upgrade to the newest repository versions
@@ -33,13 +36,17 @@ const USAGE: &str = "usage: pkg [--root DIR] [--repo DIR]... [-n|--dry-run] [-f|
   repos               show the configured repositories
   build SRC [OUT]     build NAME-VERSION.fpk from SRC/control and SRC/files
   index DIR           write DIR/INDEX for the packages in DIR
+  key new NAME [DIR]  make a signing key pair: DIR/NAME.key (secret) and DIR/NAME.pub
+  sign DIR KEYFILE    sign DIR/INDEX, writing DIR/INDEX.sig
 
 --root installs into another directory tree. Repositories come from --repo and from
-ROOT/etc/flint/pkg.conf (lines: repo /path/to/dir).";
+ROOT/etc/flint/pkg.conf (lines: repo /path/to/dir, or repo https://host/path).
+A remote repository's INDEX must be signed by a key in ROOT/etc/flint/keys/*.pub;
+packages are checked against the SHA-256 in that signed INDEX.";
 
 struct Opts {
     root: PathBuf,
-    repos: Vec<PathBuf>,
+    repos: Vec<RepoSpec>,
     force: bool,
     dry_run: bool,
 }
@@ -55,19 +62,49 @@ pub fn main(args: Vec<String>) -> i32 {
     }
 }
 
-fn repo_dirs(o: &Opts) -> Result<Vec<PathBuf>, String> {
-    let mut dirs = o.repos.clone();
+fn repo_specs(o: &Opts) -> Result<Vec<RepoSpec>, String> {
+    let mut specs = o.repos.clone();
     let conf = o.root.join("etc/flint/pkg.conf");
     match fs::read_to_string(&conf) {
-        Ok(t) => dirs.extend(repo_dirs_from_conf(&t)?),
+        Ok(t) => specs.extend(remote::parse_conf(&t)?),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(format!("{}: {e}", conf.display())),
     }
-    Ok(dirs)
+    Ok(specs)
+}
+
+fn remotes(o: &Opts) -> Result<Vec<String>, String> {
+    Ok(repo_specs(o)?.into_iter().filter_map(|s| if let RepoSpec::Remote(u) = s { Some(u) } else { None }).collect())
+}
+
+fn update_one(o: &Opts, url: &str) -> Result<(), String> {
+    let u = remote::update(&o.root, url)?;
+    println!("{url}: {} package(s), signed by {}{}", u.packages, u.key, if u.changed { "" } else { " (unchanged)" });
+    Ok(())
+}
+
+/// Refresh remote package lists: all of them when `all` (before installing or upgrading,
+/// so the newest versions are seen), otherwise only the ones never fetched. A refresh that
+/// fails is a warning: the last verified list is used, or the repository is skipped.
+fn refresh(o: &Opts, all: bool) -> Result<(), String> {
+    for url in remotes(o)? {
+        let have = remote::cache_dir(&o.root, &url).join("INDEX").is_file();
+        if have && !all {
+            continue;
+        }
+        if let Err(e) = update_one(o, &url) {
+            if have {
+                eprintln!("pkg: warning: {e}; using the package list from the last update");
+            } else {
+                eprintln!("pkg: warning: {e}; skipping this repository");
+            }
+        }
+    }
+    Ok(())
 }
 
 fn repos(o: &Opts) -> Result<Vec<Repo>, String> {
-    load_repos(&repo_dirs(o)?)
+    load_repos(&o.root, &repo_specs(o)?)
 }
 
 fn sync() {
@@ -94,6 +131,12 @@ fn run_steps(o: &Opts, plan: resolve::Plan) -> Result<(), String> {
     if o.dry_run {
         println!("dry run: nothing was changed");
         return Ok(());
+    }
+    // Download everything first, so a broken connection never leaves a half-done upgrade.
+    for step in &plan.steps {
+        if let Source::Repo { path, url: Some(url), size, sha256 } = &step.source {
+            remote::fetch_package(url, path, *size, sha256)?;
+        }
     }
     let ctx = Ctx { root: o.root.clone(), force: o.force, db: Db::open(&o.root) };
     let mut notes = Vec::new();
@@ -131,6 +174,7 @@ fn do_remove(o: &Opts, names: &[String], installed: &[Installed]) -> Result<(), 
 }
 
 fn newest_available(o: &Opts, name: &str) -> Option<IndexEntry> {
+    let _ = refresh(o, false);
     let mut best: Option<IndexEntry> = None;
     for r in repos(o).ok()? {
         for e in r.entries {
@@ -153,7 +197,7 @@ fn run(argv: Vec<String>) -> Result<i32, String> {
                 i += 1;
             }
             "--repo" => {
-                o.repos.push(PathBuf::from(args.get(i + 1).ok_or("--repo needs a directory")?));
+                o.repos.push(remote::spec(args.get(i + 1).ok_or("--repo needs a directory or URL")?)?);
                 i += 1;
             }
             "-n" | "--dry-run" => o.dry_run = true,
@@ -179,7 +223,7 @@ fn run(argv: Vec<String>) -> Result<i32, String> {
         return Err(format!("options go before the command: '{bad}'"));
     }
     let db = Db::open(&o.root);
-    let changes = matches!(cmd, "install" | "upgrade" | "remove" | "del" | "autoremove");
+    let changes = matches!(cmd, "install" | "upgrade" | "remove" | "del" | "autoremove" | "update");
     if changes && !o.dry_run && !o.root.is_dir() {
         return Err(format!("install root {} is not a directory", o.root.display()));
     }
@@ -211,11 +255,55 @@ fn run(argv: Vec<String>) -> Result<i32, String> {
             }
             let installed = db.all()?;
             let need_repos = reqs.iter().any(|r| matches!(r, Request::Name(_))) || reqs.iter().any(|r| matches!(r, Request::File(_, c) if !c.depends.is_empty()));
-            let rs = if need_repos { repos(&o)? } else { Vec::new() };
+            let rs = if need_repos {
+                refresh(&o, true)?;
+                repos(&o)?
+            } else {
+                Vec::new()
+            };
             let plan = plan_install(&reqs, &installed, &rs)?;
             run_steps(&o, plan)?;
         }
+        "update" => {
+            let urls = remotes(&o)?;
+            if urls.is_empty() {
+                println!("no remote repositories configured (add 'repo https://...' to {}/etc/flint/pkg.conf)", o.root.display().to_string().trim_end_matches('/'));
+            }
+            let mut failed = 0;
+            for url in urls {
+                if let Err(e) = update_one(&o, &url) {
+                    eprintln!("pkg: {e}");
+                    failed += 1;
+                }
+            }
+            if failed > 0 {
+                return Ok(1);
+            }
+        }
+        "key" => match rest.first().map(String::as_str) {
+            Some("new") => {
+                let name = rest.get(1).ok_or("usage: pkg key new NAME [DIR]")?;
+                let dir = rest.get(2).map_or(Path::new("."), |s| Path::new(s.as_str()));
+                let (sk, pk) = remote::new_key(dir, name)?;
+                println!("secret key: {} (keep it private, never put it in a repository)", sk.display());
+                println!("public key: {} (copy it to /etc/flint/keys/ on systems that trust this repository)", pk.display());
+            }
+            _ => return Err("usage: pkg key new NAME [DIR]".into()),
+        },
+        "sign" => {
+            let (Some(dir), Some(keyfile)) = (rest.first(), rest.get(1)) else {
+                return Err("usage: pkg sign DIR KEYFILE".into());
+            };
+            let dir = Path::new(dir);
+            let index = fs::read(dir.join("INDEX")).map_err(|e| format!("{}/INDEX: {e} (make it with: pkg index {})", dir.display(), dir.display()))?;
+            let n = control::parse_index(std::str::from_utf8(&index).map_err(|_| "INDEX is not text")?)?.len();
+            let seed = remote::parse_secret(&fs::read_to_string(keyfile).map_err(|e| format!("{keyfile}: {e}"))?)?;
+            let sig = remote::sign(&index, &seed);
+            fs::write(dir.join("INDEX.sig"), &sig).map_err(|e| format!("{}/INDEX.sig: {e}", dir.display()))?;
+            println!("signed {}/INDEX ({n} package(s)) with key {}", dir.display(), &sig.split_whitespace().nth(2).unwrap_or("")[..16]);
+        }
         "upgrade" => {
+            refresh(&o, true)?;
             let installed = db.all()?;
             let plan = plan_upgrade(rest, &installed, &repos(&o)?)?;
             if plan.steps.is_empty() {
@@ -290,6 +378,7 @@ fn run(argv: Vec<String>) -> Result<i32, String> {
         "search" => {
             let term = rest.first().ok_or("usage: pkg search TERM")?.to_lowercase();
             let installed = db.all()?;
+            refresh(&o, false)?;
             let mut all: Vec<control::Control> = repos(&o).map(|rs| rs.into_iter().flat_map(|r| r.entries.into_iter().map(|e| e.control)).collect()).unwrap_or_default();
             all.extend(installed.iter().map(|i| i.control.clone()));
             all.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| compare(&a.version, &b.version)));
@@ -332,8 +421,22 @@ fn run(argv: Vec<String>) -> Result<i32, String> {
             }
         }
         "repos" => {
-            for d in repo_dirs(&o)? {
-                println!("{}", d.display());
+            for spec in repo_specs(&o)? {
+                match &spec {
+                    RepoSpec::Local(_) => println!("{spec}"),
+                    RepoSpec::Remote(url) => match remote::cached_index(&o.root, url) {
+                        Ok(Some(t)) => println!("{spec} ({} package(s) at the last update)", control::parse_index(&t).map_or(0, |e| e.len())),
+                        Ok(None) => println!("{spec} (not fetched yet: pkg update)"),
+                        Err(e) => println!("{spec} ({e})"),
+                    },
+                }
+            }
+            let keys = remote::trusted_keys(&o.root);
+            if keys.is_empty() && !remotes(&o)?.is_empty() {
+                println!("trusted keys: none");
+            }
+            for k in keys {
+                println!("trusted key: {} {}", k.name, flint_crypto::hex(&k.public));
             }
         }
         "help" => println!("{USAGE}\n\nthis system: {THIS_ARCH}"),

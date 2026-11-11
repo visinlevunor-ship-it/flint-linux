@@ -158,8 +158,11 @@ pub fn index(dir: &Path) -> Result<Vec<IndexEntry>, String> {
 
 pub fn write_index(dir: &Path) -> Result<usize, String> {
     let entries = index(dir)?;
+    // Never go backwards, even if the clock is wrong: clients refuse an older INDEX.
+    let old = fs::read_to_string(dir.join("INDEX")).map_or(0, |t| crate::remote::timestamp(&t));
+    let ts = crate::remote::now().max(old + 1);
     let tmp = dir.join(".INDEX.tmp");
-    fs::write(&tmp, format_index(&entries)).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    fs::write(&tmp, format_index(&entries, ts)).map_err(|e| format!("{}: {e}", tmp.display()))?;
     fs::rename(&tmp, dir.join("INDEX")).map_err(|e| e.to_string())?;
     Ok(entries.len())
 }

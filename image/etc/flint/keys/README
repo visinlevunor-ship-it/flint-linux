@@ -1,0 +1,3 @@
+Public keys of trusted package repositories (NAME.pub: "ed25519 HEX NAME").
+build-initramfs.sh copies every *.pub here to /etc/flint/keys/ in the image.
+Make a key pair with: pkg key new NAME DIR  (keep NAME.key private and out of git).

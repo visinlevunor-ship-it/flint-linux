@@ -156,7 +156,7 @@ fn create_parents(full: &Path, created: &mut Created) -> Result<(), String> {
 pub fn install_step(ctx: &Ctx, step: &Step, old: Option<&Installed>, notes: &mut Vec<String>) -> Result<Installed, String> {
     // 1. Where the package comes from; repository packages must match the index exactly.
     let pkg_path: PathBuf = match &step.source {
-        Source::Repo { path, size, sha256 } => {
+        Source::Repo { path, size, sha256, .. } => {
             let (h, s) = hash_file(path).map_err(|e| io(e, path))?;
             if s != *size || h != *sha256 {
                 return Err(format!("checksum mismatch for {}: the file does not match the repository index, refusing to install it", path.display()));

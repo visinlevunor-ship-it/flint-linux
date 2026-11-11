@@ -100,6 +100,10 @@ pub fn parse_index(text: &str) -> Result<Vec<IndexEntry>, String> {
         if block.trim().is_empty() {
             continue;
         }
+        // The header block (timestamp: N) of a signed INDEX describes the index, not a package.
+        if block.trim_start().starts_with("timestamp:") {
+            continue;
+        }
         let control = Control::parse(block)?;
         let get = |key: &str| block.lines().find_map(|l| l.strip_prefix(key).and_then(|r| r.strip_prefix(':')).map(|v| v.trim().to_string()));
         let file = get("file").ok_or_else(|| format!("index: {} has no 'file'", control.name))?;
@@ -113,8 +117,10 @@ pub fn parse_index(text: &str) -> Result<Vec<IndexEntry>, String> {
     Ok(entries)
 }
 
-pub fn format_index(entries: &[IndexEntry]) -> String {
-    let mut out = String::new();
+/// The text of an INDEX: a header with the time it was made (pkg refuses an INDEX older
+/// than one it already accepted), then one block per package.
+pub fn format_index(entries: &[IndexEntry], timestamp: u64) -> String {
+    let mut out = format!("timestamp: {timestamp}\n\n");
     for e in entries {
         out.push_str(&e.control.to_text());
         out.push_str(&format!("file: {}\nsize: {}\nsha256: {}\n\n", e.file, e.size, e.sha256));
@@ -156,7 +162,8 @@ mod tests {
     #[test]
     fn index_round_trip() {
         let e = IndexEntry { control: Control::parse(SAMPLE).unwrap(), file: "hello-1.2.0.fpk".into(), size: 1234, sha256: "ab".repeat(32) };
-        let text = format_index(&[e.clone(), IndexEntry { control: Control::parse("name: z\nversion: 2\n").unwrap(), file: "z-2.fpk".into(), size: 5, sha256: "00".repeat(32) }]);
+        let text = format_index(&[e.clone(), IndexEntry { control: Control::parse("name: z\nversion: 2\n").unwrap(), file: "z-2.fpk".into(), size: 5, sha256: "00".repeat(32) }], 1700000000);
+        assert!(text.starts_with("timestamp: 1700000000\n\n"));
         let back = parse_index(&text).unwrap();
         assert_eq!(back.len(), 2);
         assert_eq!(back[0], e);

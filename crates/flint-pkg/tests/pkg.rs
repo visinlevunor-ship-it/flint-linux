@@ -411,3 +411,105 @@ fn a_failed_install_is_rolled_back() {
     assert!(run(&["--root", &e.s("root"), "list"]).ok().stdout.is_empty(), "nothing recorded");
     assert!(!e.root("var/lib/pkg/lock").exists());
 }
+
+// ---------------------------------------------------------------- remote repositories
+
+/// A minimal HTTP server for `dir`, on 127.0.0.1, until the test ends.
+fn serve(dir: PathBuf) -> String {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut conn) = conn else { continue };
+            let mut r = BufReader::new(conn.try_clone().unwrap());
+            let mut line = String::new();
+            let _ = r.read_line(&mut line);
+            loop {
+                let mut h = String::new();
+                if r.read_line(&mut h).unwrap_or(0) == 0 || h.trim().is_empty() {
+                    break;
+                }
+            }
+            let path = line.split_whitespace().nth(1).unwrap_or("/").trim_start_matches('/').trim_start_matches("repo/").to_string();
+            let _ = match fs::read(dir.join(&path)) {
+                Ok(body) if !path.contains("..") => conn.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).and_then(|_| conn.write_all(&body)),
+                _ => conn.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
+            };
+        }
+    });
+    format!("http://127.0.0.1:{port}/repo")
+}
+
+#[test]
+fn remote_repository_signed_index_and_downloads() {
+    let e = Env::new();
+    e.publish("lib", "name: libgreet\nversion: 1.0\ndescription: Greeting library\n", &[("usr/lib/libgreet.txt", "lib\n", 0o644)]);
+    e.publish("app", "name: hello\nversion: 1.0\ndescription: Says hello\ndepends: libgreet\n", &[("usr/bin/hello", "#!/bin/sh\necho hi\n", 0o755)]);
+    let keys = e.p("keys");
+    fs::create_dir_all(&keys).unwrap();
+    run(&["key", "new", "test", &keys.to_string_lossy()]).ok();
+    run(&["key", "new", "test", &keys.to_string_lossy()]).fails("already exists");
+    let secret = keys.join("test.key").to_string_lossy().into_owned();
+    assert!(run(&["sign", &e.s("repo"), &secret]).ok().stdout.contains("2 package(s)"));
+
+    let url = serve(e.p("repo"));
+    let root = e.s("root");
+    let r = |args: &[&str]| {
+        let mut all = vec!["--root", root.as_str(), "--repo", url.as_str()];
+        all.extend_from_slice(args);
+        run(&all)
+    };
+
+    // No trusted key yet: nothing from the network is accepted.
+    r(&["update"]).fails("no trusted keys");
+    r(&["install", "hello"]).fails("no trusted keys");
+    fs::create_dir_all(e.root("etc/flint/keys")).unwrap();
+    fs::copy(keys.join("test.pub"), e.root("etc/flint/keys/test.pub")).unwrap();
+
+    assert!(r(&["update"]).ok().stdout.contains("2 package(s), signed by test"));
+    let o = r(&["install", "hello"]);
+    o.ok();
+    assert!(o.stdout.contains("downloading libgreet-1.0.fpk") && o.stdout.contains("downloading hello-1.0.fpk"), "{}", o.stdout);
+    assert_eq!(read(&e.root("usr/bin/hello")), "#!/bin/sh\necho hi\n");
+    assert!(r(&["repos"]).ok().stdout.contains("trusted key: test "));
+
+    // A newer version, signed: upgrade downloads it.
+    let old_index = fs::read(e.p("repo/INDEX")).unwrap();
+    let old_sig = fs::read(e.p("repo/INDEX.sig")).unwrap();
+    e.publish("app", "name: hello\nversion: 2.0\ndescription: Says hello\ndepends: libgreet\n", &[("usr/bin/hello", "#!/bin/sh\necho v2\n", 0o755)]);
+    run(&["sign", &e.s("repo"), &secret]).ok();
+    r(&["upgrade"]).ok();
+    assert_eq!(read(&e.root("usr/bin/hello")), "#!/bin/sh\necho v2\n");
+
+    // An INDEX changed after signing is refused, and the last good one stays in use.
+    let good_index = fs::read(e.p("repo/INDEX")).unwrap();
+    fs::write(e.p("repo/INDEX"), [&good_index[..], b"\n"].concat()).unwrap();
+    r(&["update"]).fails("does not match INDEX");
+    assert!(r(&["search", "hello"]).ok().stdout.contains("hello 2.0"));
+    fs::write(e.p("repo/INDEX"), &good_index).unwrap();
+
+    // An old (genuinely signed) INDEX is a rollback and is refused.
+    let cur_sig = fs::read(e.p("repo/INDEX.sig")).unwrap();
+    fs::write(e.p("repo/INDEX"), &old_index).unwrap();
+    fs::write(e.p("repo/INDEX.sig"), &old_sig).unwrap();
+    r(&["update"]).fails("older than the one already accepted");
+    fs::write(e.p("repo/INDEX"), &good_index).unwrap();
+    fs::write(e.p("repo/INDEX.sig"), &cur_sig).unwrap();
+
+    // A package swapped on the server does not match the signed SHA-256.
+    r(&["remove", "hello"]).ok();
+    fs::remove_dir_all(e.root("var/cache/pkg/remote")).ok();
+    let pkgfile = e.p("repo/hello-2.0.fpk");
+    let mut data = fs::read(&pkgfile).unwrap();
+    let last = data.len() - 1;
+    data[last] ^= 1;
+    fs::write(&pkgfile, data).unwrap();
+    r(&["install", "hello"]).fails("does not match the signed INDEX");
+    assert!(!e.root("usr/bin/hello").exists());
+
+    // Signed by a key nobody trusts.
+    run(&["key", "new", "evil", &keys.to_string_lossy()]).ok();
+    run(&["sign", &e.s("repo"), &keys.join("evil.key").to_string_lossy()]).ok();
+    r(&["update"]).fails("not trusted");
+}
