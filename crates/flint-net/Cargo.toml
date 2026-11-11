@@ -7,4 +7,6 @@ description = "Networking: netd (DHCP, Wi-Fi with WPA2), the net command, ping, 
 
 [dependencies]
 flint-core.workspace = true
+flint-crypto = { path = "../flint-crypto" }
+flint-web = { path = "../flint-web" }
 libc.workspace = true

@@ -7,6 +7,7 @@ members = [
     "crates/flint-auth",
     "crates/flint-box",
     "crates/flint-core",
+    "crates/flint-crypto",
     "crates/flint-dev",
     "crates/flint-init",
     "crates/flint-login",
@@ -15,6 +16,7 @@ members = [
     "crates/flint-passwd",
     "crates/flint-pkg",
     "crates/flint-sh",
+    "crates/flint-web",
     "crates/flint-su",
     "crates/flint-power",
 ]

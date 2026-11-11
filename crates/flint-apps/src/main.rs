@@ -10,6 +10,7 @@ use std::path::Path;
 /// Programs other than the core tools from flint-box.
 const PROGRAMS: &[(&str, fn(Vec<String>) -> i32)] = &[
     ("devd", flint_dev::devd),
+    ("fetch", flint_web::fetch),
     ("halt", flint_power::main),
     ("init", flint_init::main),
     ("login", flint_login::main),

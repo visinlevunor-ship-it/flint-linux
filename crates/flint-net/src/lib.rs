@@ -5,7 +5,7 @@
 pub mod cli;
 pub mod crypto;
 pub mod dhcp;
-pub mod dns;
+pub use flint_web::dns;
 pub mod eapol;
 pub mod netd;
 pub mod netlink;

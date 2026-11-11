@@ -17,6 +17,7 @@ bin du
 bin echo
 bin env
 bin false
+bin fetch
 bin find
 bin free
 bin grep

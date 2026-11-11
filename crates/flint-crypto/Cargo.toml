@@ -1,0 +1,9 @@
+[package]
+name = "flint-crypto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Cryptography for Flint: SHA-512, Ed25519, X25519, AES-GCM, HKDF. Pure Rust, std only."
+
+[dependencies]
+flint-auth = { path = "../flint-auth" }

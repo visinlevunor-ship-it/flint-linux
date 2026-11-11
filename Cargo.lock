@@ -15,6 +15,7 @@ dependencies = [
  "flint-pkg",
  "flint-power",
  "flint-sh",
+ "flint-web",
 ]
 
 [[package]]
@@ -35,6 +36,13 @@ name = "flint-core"
 version = "0.1.0"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "flint-crypto"
+version = "0.1.0"
+dependencies = [
+ "flint-auth",
 ]
 
 [[package]]
@@ -74,6 +82,8 @@ name = "flint-net"
 version = "0.1.0"
 dependencies = [
  "flint-core",
+ "flint-crypto",
+ "flint-web",
  "libc",
 ]
 
@@ -92,6 +102,8 @@ version = "0.1.0"
 dependencies = [
  "flint-auth",
  "flint-core",
+ "flint-crypto",
+ "flint-web",
  "libc",
 ]
 
@@ -119,6 +131,13 @@ dependencies = [
  "flint-auth",
  "flint-core",
  "libc",
+]
+
+[[package]]
+name = "flint-web"
+version = "0.1.0"
+dependencies = [
+ "flint-crypto",
 ]
 
 [[package]]
