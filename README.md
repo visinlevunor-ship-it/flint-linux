@@ -2,7 +2,7 @@
 
 A small Linux distribution with a from-scratch userland written in Rust. Only the kernel and its modules are upstream; the init system, login, shell, core tools and account handling are Flint's own.
 
-**Status: 0.3, early development.** Flint boots in QEMU to a login prompt and a working shell. It is not installable on real hardware yet (no installer, no bootloader setup, no networking, no package manager).
+**Status: 0.4, early development.** Flint boots in QEMU to a login prompt and a working shell. It is not installable on real hardware yet (no installer, no bootloader setup, no networking, no package manager).
 
 ## What works today
 
