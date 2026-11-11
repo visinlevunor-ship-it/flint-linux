@@ -121,6 +121,10 @@ pub fn new_key(dir: &Path, name: &str) -> Result<(PathBuf, PathBuf), String> {
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.') {
         return Err("a key name is letters, digits, '-', '_' or '.'".into());
     }
+    if !dir.exists() {
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
     let sk = dir.join(format!("{name}.key"));
     let pk = dir.join(format!("{name}.pub"));
     if sk.exists() || pk.exists() {

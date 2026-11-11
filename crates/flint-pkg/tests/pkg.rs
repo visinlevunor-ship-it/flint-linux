@@ -446,10 +446,10 @@ fn remote_repository_signed_index_and_downloads() {
     let e = Env::new();
     e.publish("lib", "name: libgreet\nversion: 1.0\ndescription: Greeting library\n", &[("usr/lib/libgreet.txt", "lib\n", 0o644)]);
     e.publish("app", "name: hello\nversion: 1.0\ndescription: Says hello\ndepends: libgreet\n", &[("usr/bin/hello", "#!/bin/sh\necho hi\n", 0o755)]);
-    let keys = e.p("keys");
-    fs::create_dir_all(&keys).unwrap();
+    let keys = e.p("keys/new-dir");
     run(&["key", "new", "test", &keys.to_string_lossy()]).ok();
     run(&["key", "new", "test", &keys.to_string_lossy()]).fails("already exists");
+    assert_eq!(fs::metadata(&keys).unwrap().mode() & 0o777, 0o700, "a new key directory is private");
     let secret = keys.join("test.key").to_string_lossy().into_owned();
     assert!(run(&["sign", &e.s("repo"), &secret]).ok().stdout.contains("2 package(s)"));
 
