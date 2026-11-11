@@ -2,7 +2,7 @@
 """End-to-end test: boot the Flint image in QEMU and drive it over the serial console.
 
 Checks login (good and bad), privilege dropping, the shell's job control, flint-box, su,
-passwd and poweroff. Works on Linux and FreeBSD hosts (software emulation is slow: allow minutes).
+passwd, flint-pkg and poweroff. Works on Linux and FreeBSD hosts (software emulation is slow: allow minutes).
 
   KERNEL=/path/to/bzImage tests/qemu/session.py [initramfs.cpio.gz]
 
@@ -123,6 +123,7 @@ try:
     q.sh("echo V-$PATH", "V-/usr/local/bin:/usr/bin:/bin"); step("non-root PATH")
     q.sh("/bin/touch ~/f; echo O-$(stat -c %U ~/f)", "O-flint"); step("home is writable and owned by the user")
     q.sh("/bin/cat /etc/shadow", "Permission denied (os error 13)"); step("shadow is unreadable by a normal user")
+    q.sh("flint-pkg install hello", "Permission denied"); step("flint-pkg: a normal user cannot install")
 
     # su
     q.sh("/bin/su root", "Password: "); q.send("wrongpw\n"); q.expect("Authentication failure", 30)
@@ -145,6 +146,19 @@ try:
     q.login("root", "flint", "root@flint:~# ")
     q.sh("echo RS-$(/bin/su flint -c '/bin/id -u')", "RS-1000"); step("root can su to a user without a password")
     q.sh("echo LH-$(/bin/su - flint -c 'echo $HOME:$USER')", "LH-/home/flint:flint"); step("su - gives a login environment")
+
+    # flint-pkg with the example repository built into the image
+    q.sh("echo PL-$(flint-pkg list | wc -l)", "PL-0"); step("flint-pkg: nothing installed yet")
+    q.sh("flint-pkg search hello", "hello 1.0 - Example program installed with flint-pkg"); step("flint-pkg search")
+    q.sh("flint-pkg install hello", "will install: greet-data 1.0, hello 1.0"); q.expect("2 package(s) installed", 60)
+    step("flint-pkg install pulls in the dependency")
+    q.sh("hello", "Hello from a Flint package!"); q.expect("hello, world"); step("the installed program runs")
+    q.sh("echo name=flint > /etc/greet.conf; hello", "hello, flint"); step("its config file is honoured")
+    q.sh("flint-pkg verify", "greet-data: modified config: /etc/greet.conf"); step("flint-pkg verify notices the edit")
+    q.sh("flint-pkg remove greet-data", "required by hello"); step("flint-pkg refuses to remove a needed package")
+    q.sh("flint-pkg remove hello && flint-pkg autoremove", "removing greet-data"); q.expect("kept modified config file /etc/greet.conf")
+    step("remove + autoremove, keeping the edited config")
+    q.sh("echo H-$(command -v hello || echo gone) C-$(cat /etc/greet.conf)", "H-gone C-name=flint"); step("files are gone, the edited config stays")
     q.send("poweroff\n")
     code = q.wait_exit(120)
     assert code == 0, f"qemu exit code {code}"; step("poweroff from the login session shuts the machine down")

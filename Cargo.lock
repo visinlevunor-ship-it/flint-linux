@@ -49,6 +49,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "flint-pkg"
+version = "0.1.0"
+dependencies = [
+ "flint-auth",
+ "libc",
+]
+
+[[package]]
 name = "flint-power"
 version = "0.1.0"
 dependencies = [

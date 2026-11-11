@@ -9,12 +9,14 @@
 #   TARGET    cargo target the binaries were built for   (default x86_64-unknown-linux-musl)
 #   PROFILE   cargo profile directory                    (default release)
 #   BINDIR    built std binaries: flint-init, flint-power, flint-login, flint-passwd, flint-su,
-#             flint-sh, flint-box
+#             flint-sh, flint-box, flint-pkg
 #                                                          (default target/$TARGET/$PROFILE)
 #   RTBINDIR  built flint-rt binaries: flint-version       (default rt/target/$TARGET/$PROFILE)
 #   SERVICES  services file to install                   (default image/etc/flint/services.qemu)
 #   BOOT      boot tasks file to install                 (default image/etc/flint/boot.qemu)
 #   OVERLAY   directory copied over the finished rootfs  (optional, for test files)
+#   HOSTPKG   a flint-pkg that runs on THIS machine, used to build the example package
+#             repository   (default target/release/flint-pkg: cargo build --release -p flint-pkg)
 #
 # POSIX sh only: runs on FreeBSD and Linux hosts.
 set -eu
@@ -29,7 +31,7 @@ BOOT=${BOOT:-$ROOT/image/etc/flint/boot.qemu}
 OUT=${1:-$ROOT/target/flint-initramfs.cpio.gz}
 : "${BUSYBOX:?set BUSYBOX to a static Linux x86_64 busybox binary}"
 
-for f in flint-init flint-power flint-login flint-passwd flint-su flint-sh flint-box; do
+for f in flint-init flint-power flint-login flint-passwd flint-su flint-sh flint-box flint-pkg; do
     [ -x "$BINDIR/$f" ] || { echo "missing $BINDIR/$f (build first, or set BINDIR/TARGET)" >&2; exit 1; }
 done
 [ -x "$RTBINDIR/flint-version" ] || { echo "missing $RTBINDIR/flint-version (cd rt && cargo build --release ...)" >&2; exit 1; }
@@ -57,6 +59,7 @@ cp "$BINDIR/flint-passwd" "$RFS/bin/passwd"
 cp "$BINDIR/flint-su" "$RFS/bin/su"
 chmod 4755 "$RFS/bin/passwd" "$RFS/bin/su"
 cp "$BINDIR/flint-sh" "$RFS/bin/flint-sh"
+cp "$BINDIR/flint-pkg" "$RFS/bin/flint-pkg"
 ln -s flint-sh "$RFS/bin/sh"
 cp "$RTBINDIR/flint-version" "$RFS/bin/flint-version"
 for a in poweroff reboot halt; do ln -s flint-power "$RFS/sbin/$a"; done
@@ -82,6 +85,23 @@ for f in passwd group shadow motd shells; do
 done
 chmod 644 "$RFS/etc/passwd" "$RFS/etc/group" "$RFS/etc/motd" "$RFS/etc/shells"
 chmod 600 "$RFS/etc/shadow"
+
+# Example package repository from packages/ (optional: needs a flint-pkg for this host).
+HOSTPKG=${HOSTPKG:-$ROOT/target/release/flint-pkg}
+if [ -x "$HOSTPKG" ] && "$HOSTPKG" --version >/dev/null 2>&1; then
+    REPO="$RFS/var/cache/flint-pkg/repo"
+    mkdir -p "$REPO"
+    for d in "$ROOT"/packages/*/; do
+        if [ -f "$d/control" ]; then
+            "$HOSTPKG" build "$d" "$REPO" >/dev/null
+        fi
+    done
+    "$HOSTPKG" index "$REPO" >/dev/null
+    echo "repo /var/cache/flint-pkg/repo" > "$RFS/etc/flint/pkg.conf"
+else
+    echo "note: no usable flint-pkg for this host at $HOSTPKG; skipping the example repository" >&2
+    echo "      (build one with: cargo build --release -p flint-pkg)" >&2
+fi
 
 if [ -n "${OVERLAY:-}" ]; then
     cp -R "$OVERLAY"/. "$RFS"/

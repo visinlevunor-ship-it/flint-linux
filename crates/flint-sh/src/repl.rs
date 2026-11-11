@@ -117,7 +117,7 @@ fn init_job_control(sh: &mut Shell) {
             tries += 1;
         }
         let mut sa: libc::sigaction = std::mem::zeroed();
-        sa.sa_sigaction = on_sigint as usize;
+        sa.sa_sigaction = on_sigint as *const () as usize;
         sa.sa_flags = 0; // no SA_RESTART: a SIGINT must interrupt the prompt's read
         libc::sigemptyset(&mut sa.sa_mask);
         libc::sigaction(libc::SIGINT, &sa, std::ptr::null_mut());

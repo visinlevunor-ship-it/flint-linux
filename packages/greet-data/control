@@ -1,0 +1,5 @@
+name: greet-data
+version: 1.0
+description: Messages for the hello example package
+arch: any
+config: etc/greet.conf
