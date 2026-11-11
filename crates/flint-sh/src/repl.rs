@@ -65,12 +65,25 @@ impl Shell {
         };
         // SAFETY: plain libc query.
         let uid = unsafe { libc::geteuid() };
-        let user = self.get("USER").map(str::to_string).unwrap_or_else(|| uid.to_string());
+        let user = self.get("USER").map(str::to_string).unwrap_or_else(|| user_name(uid));
         let cwd = self.get("PWD").map(str::to_string).unwrap_or_else(|| "/".to_string());
         let home = self.get("HOME").unwrap_or("").to_string();
         let escaped = prompt_escapes(&template, &user, &host, &cwd, &home, uid == 0);
         self.expand_dq_text(&escaped)
     }
+}
+
+/// The account name of `uid` from /etc/passwd, or the number if it has none.
+fn user_name(uid: libc::uid_t) -> String {
+    let passwd = std::fs::read_to_string("/etc/passwd").unwrap_or_default();
+    passwd
+        .lines()
+        .find_map(|l| {
+            let mut f = l.split(':');
+            let name = f.next()?;
+            (f.nth(1)?.parse::<libc::uid_t>().ok()? == uid).then(|| name.to_string())
+        })
+        .unwrap_or_else(|| uid.to_string())
 }
 
 enum Read {
