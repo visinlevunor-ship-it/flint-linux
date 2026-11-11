@@ -5,6 +5,7 @@ mod expand;
 mod glob;
 mod jobs;
 mod lexer;
+mod lineedit;
 mod parser;
 mod printf;
 mod repl;

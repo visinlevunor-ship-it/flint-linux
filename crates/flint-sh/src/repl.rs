@@ -2,6 +2,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::lineedit::{Completions, Edit, LineEditor};
 use crate::parser::{parse, ParseError};
 use crate::shell::{Flow, Shell};
 use crate::util::{errln, write_fd};
@@ -131,17 +132,149 @@ fn init_job_control(sh: &mut Shell) {
     sh.interactive = true;
 }
 
+/// Words for Tab completion at byte `pos` of `line`.
+fn complete(sh: &Shell, line: &str, pos: usize) -> Completions {
+    let before = &line[..pos];
+    // The word being completed: back to an unescaped blank or a shell operator.
+    let bytes = before.as_bytes();
+    let mut start = bytes.len();
+    while start > 0 {
+        let c = bytes[start - 1];
+        let escaped = start >= 2 && bytes[start - 2] == b'\\';
+        if !escaped && (c == b' ' || c == b'\t' || b";|&()<>".contains(&c)) {
+            break;
+        }
+        start -= 1;
+    }
+    let word = &before[start..];
+    let unescaped: String = {
+        let mut out = String::new();
+        let mut it = word.chars();
+        while let Some(c) = it.next() {
+            if c == '\\' {
+                if let Some(n) = it.next() {
+                    out.push(n);
+                }
+            } else if c != '\'' && c != '"' {
+                out.push(c);
+            }
+        }
+        out
+    };
+    let escape = |s: &str| -> String {
+        let mut out = String::new();
+        for c in s.chars() {
+            if " \t\\'\"$`&;|()<>*?[]{}!#~".contains(c) && !(c == '~' && out.is_empty()) {
+                out.push('\\');
+            }
+            out.push(c);
+        }
+        out
+    };
+    let mut items: Vec<(String, &'static str)> = Vec::new();
+    // $VARIABLE
+    if let Some(v) = unescaped.strip_prefix('$') {
+        let mut names: Vec<&String> = sh.vars.keys().filter(|k| k.starts_with(v)).collect();
+        names.sort();
+        items = names.into_iter().map(|n| (format!("${n}"), " ")).collect();
+        return Completions { start, items };
+    }
+    let prev = before[..start].trim_end();
+    let command_position = prev.is_empty() || prev.ends_with([';', '|', '&', '(']) || prev.ends_with("then") || prev.ends_with("do") || prev.ends_with("else") || prev.ends_with("sudo") || prev.ends_with("su -c") || prev.ends_with("exec") || prev.ends_with("command");
+    if command_position && !unescaped.contains('/') {
+        let mut names: Vec<String> = Vec::new();
+        for b in ["cd", "echo", "exit", "export", "printf", "read", "set", "shift", "source", "test", "type", "unset", "jobs", "fg", "bg", "wait", "kill", "local", "trap", "eval", "exec", "command", "umask", "return", "break", "continue", "pwd", "true", "false"] {
+            if b.starts_with(&unescaped) {
+                names.push(b.to_string());
+            }
+        }
+        names.extend(sh.funcs.keys().filter(|k| k.starts_with(&unescaped)).cloned());
+        let path = sh.get("PATH").unwrap_or("/bin:/usr/bin").to_string();
+        for dir in path.split(':') {
+            let Ok(rd) = std::fs::read_dir(if dir.is_empty() { "." } else { dir }) else { continue };
+            for e in rd.flatten() {
+                let n = e.file_name().to_string_lossy().into_owned();
+                if !n.starts_with(&unescaped) {
+                    continue;
+                }
+                use std::os::unix::fs::PermissionsExt;
+                if std::fs::metadata(e.path()).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0) {
+                    names.push(n);
+                }
+            }
+        }
+        names.sort();
+        names.dedup();
+        items = names.into_iter().map(|n| (escape(&n), " ")).collect();
+        return Completions { start, items };
+    }
+    // A path: complete the last component in its directory (~ means HOME).
+    let (dir_part, file_prefix) = match unescaped.rfind('/') {
+        Some(k) => (&unescaped[..=k], &unescaped[k + 1..]),
+        None => ("", unescaped.as_str()),
+    };
+    let home = sh.get("HOME").unwrap_or("/").to_string();
+    let list_dir = if dir_part.is_empty() {
+        ".".to_string()
+    } else if let Some(rest) = dir_part.strip_prefix("~/") {
+        format!("{home}/{rest}")
+    } else {
+        dir_part.to_string()
+    };
+    if let Ok(rd) = std::fs::read_dir(&list_dir) {
+        let mut found: Vec<(String, bool)> = rd
+            .flatten()
+            .filter_map(|e| {
+                let n = e.file_name().to_string_lossy().into_owned();
+                if !n.starts_with(file_prefix) || (n.starts_with('.') && !file_prefix.starts_with('.')) {
+                    return None;
+                }
+                let is_dir = std::fs::metadata(e.path()).is_ok_and(|m| m.is_dir());
+                Some((n, is_dir))
+            })
+            .collect();
+        found.sort();
+        items = found.into_iter().map(|(n, d)| (escape(&format!("{dir_part}{n}")), if d { "/" } else { " " })).collect();
+    }
+    Completions { start, items }
+}
+
 fn interactive_loop(sh: &mut Shell) -> i32 {
     let mut buf = String::new();
+    // The line editor needs a real terminal that understands escape sequences.
+    let term_ok = unsafe { libc::isatty(0) == 1 && libc::isatty(2) == 1 } && sh.get("TERM").map_or(true, |t| t != "dumb");
+    let hist_file = sh.get("HISTFILE").map(String::from).or_else(|| sh.get("HOME").filter(|h| !h.is_empty()).map(|h| format!("{h}/.sh_history")));
+    let mut editor = if term_ok { Some(LineEditor::new(hist_file.map(std::path::PathBuf::from))) } else { None };
     loop {
         sh.reap_jobs();
         sh.notify_jobs();
         let prompt = sh.prompt(if buf.is_empty() { "PS1" } else { "PS2" });
-        write_fd(2, prompt.as_bytes());
-        match read_line() {
+        let input = match editor.as_mut() {
+            Some(ed) => {
+                let shell: &Shell = sh;
+                match ed.read(&prompt, &mut |l, p| complete(shell, l, p)) {
+                    Ok(Edit::Line(l)) => Read::Line(l + "\n"),
+                    Ok(Edit::Eof) => Read::Eof,
+                    Ok(Edit::Interrupted) => Read::Interrupted,
+                    Err(_) => {
+                        // The terminal went away or misbehaves: fall back to plain reading.
+                        editor = None;
+                        write_fd(2, prompt.as_bytes());
+                        read_line()
+                    }
+                }
+            }
+            None => {
+                write_fd(2, prompt.as_bytes());
+                read_line()
+            }
+        };
+        match input {
             Read::Line(l) => buf.push_str(&l),
             Read::Interrupted => {
-                write_fd(2, b"\n");
+                if editor.is_none() {
+                    write_fd(2, b"\n");
+                }
                 buf.clear();
                 continue;
             }
@@ -158,7 +291,14 @@ fn interactive_loop(sh: &mut Shell) -> i32 {
             buf.clear();
             continue;
         }
-        match parse(&buf) {
+        let parsed = parse(&buf);
+        if !matches!(parsed, Err(ParseError::Incomplete)) {
+            // A whole command (all its lines) goes into the history.
+            if let Some(ed) = editor.as_mut() {
+                ed.add(&buf);
+            }
+        }
+        match parsed {
             Err(ParseError::Incomplete) => continue,
             Err(ParseError::Syntax(m)) => {
                 errln(&format!("syntax error: {m}"));
