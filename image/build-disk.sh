@@ -9,8 +9,9 @@
 #
 # Environment:
 #   LINUX     unpacked kernel + firmware from image/fetch-kernel.sh   (default build/linux)
-#   BASE      Flint root filesystem image; built with the bare-metal services and boot
-#             tasks when missing                                     (default target/flint-base.img)
+#   BASE      a Flint root filesystem image to use instead of building one; by default
+#             target/flint-base-pc.img is (re)built with the bare-metal services and boot
+#             tasks (needs BUSYBOX, like image/build-initramfs.sh)
 #   BOOTEFI   the bootloader     (default boot/target/x86_64-unknown-uefi/release/flint-boot.efi)
 #   BOOTCFG   boot menu file     (default image/boot.cfg)
 #   DRIVERS   driver selection   (default image/drivers.conf)
@@ -23,7 +24,7 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${1:-$ROOT/target/flint.img}
 LINUX=${LINUX:-$ROOT/build/linux}
-BASE=${BASE:-$ROOT/target/flint-base.img}
+BASE=${BASE:-}
 BOOTEFI=${BOOTEFI:-$ROOT/boot/target/x86_64-unknown-uefi/release/flint-boot.efi}
 BOOTCFG=${BOOTCFG:-$ROOT/image/boot.cfg}
 DRIVERS=${DRIVERS:-$ROOT/image/drivers.conf}
@@ -37,11 +38,13 @@ KERNEL=$(ls "$LINUX"/kernel/boot/vmlinuz-* 2>/dev/null | head -n 1)
 [ -n "$KERNEL" ] || { echo "no kernel in $LINUX/kernel/boot (run image/fetch-kernel.sh first)" >&2; exit 1; }
 [ -d "$LINUX/firmware/lib/firmware" ] || { echo "no firmware in $LINUX/firmware/lib/firmware (run image/fetch-kernel.sh first)" >&2; exit 1; }
 
-if [ ! -f "$BASE" ]; then
+if [ -z "$BASE" ]; then
+    BASE=$ROOT/target/flint-base-pc.img
     echo "building the root filesystem ($BASE)"
-    SERVICES=${SERVICES:-$ROOT/image/etc/flint/services} BOOT=${BOOT:-$ROOT/image/etc/flint/boot} \
+    SERVICES=$ROOT/image/etc/flint/services BOOT=$ROOT/image/etc/flint/boot \
         "$ROOT/image/build-initramfs.sh" "$BASE"
 fi
+[ -f "$BASE" ] || { echo "missing $BASE" >&2; exit 1; }
 
 STAGE=$(mktemp -d "${TMPDIR:-/tmp}/flint-disk.XXXXXX")
 trap 'rm -rf "$STAGE"' EXIT

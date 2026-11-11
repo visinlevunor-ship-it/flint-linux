@@ -4,57 +4,96 @@ A small Linux distribution with a from-scratch userland written in Rust. Only th
 
 [![Support Flint on Patreon](https://img.shields.io/badge/Patreon-support%20Flint-f96854?logo=patreon&logoColor=white)](https://www.patreon.com/c/FlintLinux/membership)
 
-**Status: 0.5, early development.** Flint boots in QEMU to a login prompt, a working shell with job control, and a package manager that installs from a local repository. It is not installable on real hardware yet (no installer, no bootloader setup, no networking).
+**Status: 0.6, early development.** Flint boots on real PCs and laptops from a USB stick with its own UEFI bootloader, loads the drivers for whatever hardware it finds, and gets on the network by itself: wired with DHCP, or Wi-Fi with WPA2. It runs from RAM as a live system; there is no installer yet.
 
 ## What works today
 
-| Component | What it is | State |
-|---|---|---|
-| `flint-init` | PID 1: early mounts, boot tasks, service supervision with respawn backoff, clean shutdown | tested in QEMU |
-| `flint-power` | `poweroff` / `reboot` / `halt` | tested in QEMU |
-| `flint-login` | getty + login: banner, password check, privilege drop, login shell | tested in QEMU |
-| `flint-passwd` | `passwd`; setuid root | tested in QEMU |
-| `flint-su` | `su`; setuid root | tested in QEMU |
-| `flint-sh` | the shell (`/bin/sh`): POSIX-style scripting, pipelines, redirections, job control | tested in QEMU and on a pty |
-| `flint-pkg` | package manager: dependencies, upgrades, config-file protection, verify | tested in QEMU |
-| `flint-box` | multicall toolbox: `ls cat cp mv rm mkdir mount ps chmod id ...` (30 applets) | tested in QEMU |
-| `flint-auth` | SHA-256, PBKDF2 password hashes, passwd/shadow/group parsing (pure Rust) | unit tested |
-| `flint-core` | shared code: version, power actions, syscall wrappers, logging, tty helpers | unit tested |
-| `flint-rt` | libc replacement for `no_std` programs (syscalls, `_start`, heap, `mem*`) | `flint-version` runs on it |
-| `flint-version` | prints `Flint Linux 0.5 (abc1234)`; first program on `flint-rt`, no libc | tested in QEMU |
+Every Flint program is one binary, `/bin/flint`, installed under normal names: `sh`, `ls`, `pkg`, `init`, `net`, `ping` and the rest are links to it (`flint --list` shows them all). Only `su` and `passwd` are separate, because they are setuid root.
 
-Not written yet: network repositories for `flint-pkg`, `flint-modload` (module autoloading), networking, a line editor for `flint-sh`, an installer.
+| Part | What it is | State |
+|---|---|---|
+| `flint-boot` | UEFI bootloader: menu from `\FLINT\BOOT.CFG`, timeout, reboot and firmware-setup entries, loads the kernel and initramfs images | tested in QEMU (OVMF) |
+| `init` | PID 1: early mounts, boot tasks, service supervision with respawn backoff, clean shutdown | tested in QEMU |
+| `modload`, `devd`, `modprobe`, `lsmod` | driver loading: every device present at boot, hotplugged ones (USB), and the kernel's own module requests | tested in QEMU, Linux 7.0 |
+| `mountboot` | mounts the USB stick or disk Flint booted from at `/boot` (found by GPT partition UUID) | tested in QEMU |
+| `netd` | network daemon: DHCP on wired interfaces, joins saved Wi-Fi networks, WPA2 handshake and rekeys, DNS servers | tested in QEMU (wired, simulated Wi-Fi) |
+| `net`, `ping` | network status, `net wifi scan / connect / list / forget`; ping with Flint's own DNS resolver | tested in QEMU |
+| `login`, `su`, `passwd` | getty + login, privilege switching, password changes | tested in QEMU |
+| `sh` | the shell: POSIX-style scripting, pipelines, redirections, job control | tested in QEMU and on a pty |
+| `pkg` | package manager: dependencies, upgrades, config-file protection, verify | tested in QEMU |
+| `poweroff`, `reboot`, `halt` | ask init to shut down (or `-f` to do it directly) | tested in QEMU |
+| `ls cat cp mv rm mkdir mount ps ...` | core tools (30) | tested in QEMU |
+| `flint-mkimage` | host tool: initramfs archives, driver and firmware selection, GPT + FAT32 disk images | unit tested, images checked with sgdisk and fsck.vfat |
+| `flint-rt`, `flint-version` | libc replacement for `no_std` programs, and the first program on it | tested in QEMU |
+
+Not written yet: an installer, a line editor for `sh`, network repositories for `pkg`, WPA3-only and enterprise Wi-Fi.
+
+## Boot it on a PC
+
+Flint runs on any 64-bit x86 PC or laptop with UEFI (most made since about 2012). **Secure Boot must be off**: Flint is not signed. Hardware support is that of the Linux 7.0 kernel and the firmware that comes with it.
+
+You need Rust (`rustup`), `zstd`, and on the build machine either FreeBSD or Linux.
+
+```sh
+rustup target add x86_64-unknown-linux-musl x86_64-unknown-uefi
+cargo build --release --workspace --target x86_64-unknown-linux-musl   # the Flint programs
+(cd rt && cargo build --release --target x86_64-unknown-linux-musl)    # libc-free programs
+cargo build --release -p flint-mkimage -p flint-pkg                     # host tools
+(cd boot && cargo build --release --target x86_64-unknown-uefi)         # the bootloader
+
+image/fetch-kernel.sh                                    # Linux 7.0 + firmware (Ubuntu packages, checksummed)
+BUSYBOX=/path/to/static-busybox image/build-disk.sh      # -> target/flint.img (512 MiB)
+```
+
+Write `target/flint.img` to a USB stick (this erases the stick), then boot from it (the boot menu key is often F12, F10 or Esc):
+
+```sh
+dd if=target/flint.img of=/dev/da0 bs=1m       # FreeBSD (check the device with: geom disk list)
+dd if=target/flint.img of=/dev/sdX bs=1M       # Linux (check with: lsblk)
+```
+
+Log in as `root`, password `flint` (change it with `passwd`). A cable is used automatically. For Wi-Fi:
+
+```sh
+net wifi scan
+net wifi connect "My Network"      # asks for the password, saves the network on the USB stick
+net                                # status
+ping example.org
+```
+
+Saved networks are stored on the USB stick (`/boot/FLINT/NETWORKS`), so they are there after a reboot. The rest of the system runs in RAM: other changes are gone after a reboot.
+
+Supported Wi-Fi security: open networks, WPA2-Personal, and WPA2/WPA3 mixed networks (joined with WPA2). Not supported yet: WPA3-only, WEP, old WPA1, enterprise (802.1X) networks, and networks that require management frame protection with WPA2.
+
+The boot menu is `\FLINT\BOOT.CFG` on the stick; it is a plain text file you can edit on any computer (see the comments in `image/boot.cfg`). Which drivers and firmware go into the image is set by `image/drivers.conf`.
 
 ## Quick start (QEMU)
 
-You need Rust with the Linux target, QEMU, a static Linux `busybox`, and a Linux x86_64 kernel image.
-
 ```sh
-rustup target add x86_64-unknown-linux-musl
-cargo build --release --workspace --target x86_64-unknown-linux-musl     # std crates
-(cd rt && cargo build --release --target x86_64-unknown-linux-musl)      # libc-free crates
-cargo build --release -p flint-pkg                                        # a flint-pkg for this host
-
 BUSYBOX=/path/to/static-busybox image/build-initramfs.sh
 KERNEL=/path/to/bzImage image/run-qemu.sh          # Ctrl-A then X quits QEMU
 ```
 
-The dev image has two accounts, `root` and `flint`, both with the password `flint`. Change it with `passwd`. For a root shell without login: `SERVICES=image/etc/flint/services.qemu-shell`.
+To boot the full disk image in QEMU with UEFI firmware (OVMF):
 
-The host `flint-pkg` builds the example packages in `packages/` into a repository inside the image, so `flint-pkg install hello` works as root. Without it the image still builds, just without that repository.
+```sh
+qemu-system-x86_64 -m 1G -machine q35 -bios /path/to/OVMF.fd -drive file=target/flint.img,format=raw
+```
+
+The dev image has two accounts, `root` and `flint`, both with the password `flint`. For a root shell without login: `SERVICES=image/etc/flint/services.qemu-shell`.
 
 `.cargo/config.toml` and `rt/.cargo/config.toml` carry the linker flags the musl cross-build needs (needed when the host's `cc` is not GNU, e.g. FreeBSD).
 
 ## Packages
 
 ```sh
-flint-pkg build packages/hello repo/          # NAME-VERSION.fpk from control + files/
-flint-pkg index repo/                         # write repo/INDEX (checksums)
-flint-pkg --repo repo/ install hello          # also installs greet-data, its dependency
-flint-pkg list | info hello | files hello | owns /usr/bin/hello | search greet
-flint-pkg upgrade                             # newest versions from the repositories
-flint-pkg verify                              # compare files with recorded checksums
-flint-pkg remove hello && flint-pkg autoremove
+pkg build packages/hello repo/          # NAME-VERSION.fpk from control + files/
+pkg index repo/                         # write repo/INDEX (checksums)
+pkg --repo repo/ install hello          # also installs greet-data, its dependency
+pkg list | info hello | files hello | owns /usr/bin/hello | search greet
+pkg upgrade                             # newest versions from the repositories
+pkg verify                              # compare files with recorded checksums
+pkg remove hello && pkg autoremove
 ```
 
 Repositories come from `--repo DIR` and from `/etc/flint/pkg.conf` (`repo /path/to/dir` lines). `--root DIR` installs into another tree, so packages can be tested without root. `-n` shows what would happen. See `packages/README.md` for the control file format.
@@ -71,30 +110,36 @@ How it stays safe:
 
 ```sh
 cargo test --workspace                          # unit and integration tests; needs a Linux host
-tests/pty/jobcontrol.py target/debug/flint-sh   # interactive flint-sh on a real pty (Linux)
+(cd boot && cargo test)                         # boot menu parsing (runs on the host)
+tests/pty/jobcontrol.py target/debug/flint      # interactive sh on a real pty (Linux)
 KERNEL=/path/to/bzImage tests/qemu/session.py   # full QEMU session over the serial console
 ```
 
-- `cargo test` runs the unit tests plus integration tests that execute the real `flint-box`, `flint-sh` and `flint-pkg` binaries. The `flint-pkg` tests include hostile packages: path traversal, writing through symlinks, tampered downloads, duplicate entries and a truncated archive that must roll back.
-- `tests/pty/jobcontrol.py` drives an interactive `flint-sh` on a pseudo-terminal: prompt, multi-line input, Ctrl-C, Ctrl-Z, `fg`, `bg`, `jobs`, `kill %N`, pipelines.
-- `tests/qemu/session.py` boots the image and checks login (good and bad), privilege dropping, `su`, `passwd`, `flint-box`, shell job control, `flint-pkg` and poweroff. It needs the image built first (see Quick start). QEMU without KVM is slow; set `SLOW=3` to stretch its timeouts.
+- `cargo test` runs the unit tests plus integration tests that execute the real `flint` and `pkg` binaries. They include hostile packages, the cryptography test vectors from the standards (SHA-1, HMAC, PBKDF2, the 802.11 PRF, AES key wrap), and a full WPA2 handshake against a simulated access point, including a wrong password.
+- `tests/qemu/session.py` boots the image and checks login, privilege dropping, `su`, `passwd`, the tools, shell job control, `pkg` and poweroff. QEMU without KVM is slow; set `SLOW=3` to stretch its timeouts.
+- For 0.6 the disk image was also booted under OVMF from NVMe, SATA, USB and virtio disks; wired networking was tested with e1000e and rtl8139 network cards; Wi-Fi with `mac80211_hwsim` against `hostapd` (WPA2, wrong password, group rekeys).
 
 ## Layout
 
 ```
-crates/flint-core      shared code (std)
+crates/flint-apps      the flint binary: dispatches to every program by name
+crates/flint-core      shared code
 crates/flint-auth      accounts and password hashes (pure Rust)
-crates/flint-init      PID 1
+crates/flint-init      init (PID 1)
 crates/flint-power     poweroff / reboot / halt
 crates/flint-login     getty + login
 crates/flint-passwd    passwd (setuid)
 crates/flint-su        su (setuid)
 crates/flint-sh        shell
 crates/flint-pkg       package manager
-crates/flint-box       multicall toolbox
+crates/flint-box       core tools
+crates/flint-dev       driver loading, mountboot
+crates/flint-net       netd, net, ping: DHCP, DNS, Wi-Fi (nl80211, WPA2)
+crates/flint-mkimage   host tool: initramfs, drivers, disk images
+boot/                  separate workspace: flint-boot, the UEFI bootloader
 rt/                    separate workspace: flint-rt and libc-free programs
 packages/              example package sources
-image/                 initramfs and QEMU scripts, default /etc files
+image/                 build scripts, boot menu, driver list, default /etc files
 tests/                 pty and QEMU end-to-end tests
 VERSION                the distro version
 ```
@@ -102,19 +147,24 @@ VERSION                the distro version
 ## Design notes
 
 - **Version.** `VERSION` holds `MAJOR.MINOR`. A rewrite of a component or any major architectural change bumps MAJOR; everything else bumps MINOR. `flint-version` prints it with the git hash. 1.0 is planned for when the userland no longer depends on musl.
-- **Own libc, in stages.** The std crates currently link musl statically. `flint-rt` is the replacement: raw syscalls, `_start`, a heap, `mem*`, panics. It is not a C library, so it does not run C programs; it exists for Flint's own Rust programs. Porting the std crates onto it is the road to 1.0.
+- **One binary.** `/bin/flint` holds every program and picks one by the name it was started as. Small on disk, one build, and nothing named `flint-*` to remember. It must never be setuid: it would run every program as root. `su` and `passwd` are separate for that reason.
+- **Booting.** `flint-boot` loads the kernel with the firmware's LoadImage/StartImage, so the kernel's EFI stub does the rest. The initramfs images are joined in memory and handed over through the LoadFile2 protocol that Linux looks for. The boot partition's GPT UUID goes on the command line as `flint.esp=`, which is how `mountboot` finds the right USB stick even with several plugged in.
+- **Drivers.** The kernel and modules are Ubuntu's (a well-tested build with drivers for nearly every PC). `flint-mkimage drivers` picks modules by path, follows their dependencies, and includes the firmware each one declares, choosing the newest version that exists; it generates `modules.dep` and `modules.alias` itself. Graphics uses the firmware framebuffer (`simpledrm`), so a GPU driver without its firmware can never leave a black screen.
+- **Networking.** All Flint's own code: netlink, a DHCP client on a packet socket, a DNS resolver, nl80211 for Wi-Fi, and the WPA2 4-way and group key handshakes with SHA-1, PBKDF2 and AES key unwrap. The kernel (or the Wi-Fi card) does the frame encryption. Wired links get a lower route metric than Wi-Fi, so a cable wins when both are up.
+- **Own libc, in stages.** The std crates currently link musl statically. `flint-rt` is the replacement: raw syscalls, `_start`, a heap, `mem*`, panics. It is not a C library, so it does not run C programs; it exists for Flint's own Rust programs.
 - **Passwords.** PBKDF2-HMAC-SHA256, 100,000 iterations, 16 random salt bytes, stored as `$flint1$<iterations>$<salt hex>$<hash hex>` in `/etc/shadow` (mode 0600). A field that is empty or starts with `!` or `*` is a locked account.
-- **Setuid policy.** Only `flint-passwd` and `flint-su` are setuid root: small single-purpose programs that take the caller's identity from the real uid. `su` honours a `wheel` group if one exists, delays a wrong password by 2 seconds, and lets only root choose the shell. `flint-box` must never be setuid: it would run every applet as root.
-- **Init configuration.** `/etc/flint/services` (supervised services: name, respawn or once, tty, command) and `/etc/flint/boot` (commands run in order before services). No shell and no quoting in either file. `flint-init --check DIR` validates them without booting.
-- **Package database.** One text file per installed package in `/var/lib/flint-pkg/installed/`, listing every file with its mode and SHA-256. `/var/lib/flint-pkg/lock` keeps two `flint-pkg` runs from changing the system at once.
+- **Init configuration.** `/etc/flint/services` (supervised services: name, respawn or once, tty, command) and `/etc/flint/boot` (commands run in order before services). No shell and no quoting in either file. `init --check DIR` validates them without booting.
+- **Package database.** One text file per installed package in `/var/lib/pkg/installed/`, listing every file with its mode and SHA-256. `/var/lib/pkg/lock` keeps two `pkg` runs from changing the system at once.
 
 ## Known limitations
 
-- Linux x86_64 only.
-- **flint-pkg** reads local directory repositories only (no network yet), does not compress packages, and does not sign them: the INDEX checksums protect against damaged or swapped files, not against someone who can rewrite the INDEX too. The base system itself is not packaged. An upgrade that fails half way is not rolled back (a fresh install is).
-- **flint-sh** has no line editor yet: no history or tab completion (the terminal's own line editing works). Not supported: `trap`, aliases, `set -e`/`-u`/`-x`, arrays, `[[ ]]`, process substitution, `${x/a/b}`. A script is parsed completely before it runs.
-- `flint-box` has 30 applets; some options are missing (for example `head -c`). The image still uses busybox for `grep`, `sed`, `date` and a few others.
-- The dev image ships a known password. Do not use it for anything real.
+- x86-64 with UEFI only; Secure Boot must be off. Tested in QEMU, not yet on a range of real machines: reports are welcome.
+- It is a live system: everything except saved Wi-Fi networks is lost on reboot. No installer yet.
+- The image still uses busybox for `grep`, `sed`, `date`, `less`, `vi` and a few others.
+- **Wi-Fi:** one network at a time, no WPA3-only or enterprise networks, no IPv6 address configuration yet (IPv6 works on links where the kernel configures it itself).
+- **pkg** reads local directory repositories only (no network yet), does not compress packages, and does not sign them. The base system itself is not packaged.
+- **sh** has no line editor yet: no history or tab completion. Not supported: `trap`, aliases, `set -e`/`-u`/`-x`, arrays, `[[ ]]`, process substitution, `${x/a/b}`.
+- The image ships a known password. Change it with `passwd` before connecting to networks you do not trust.
 - `cargo test` does not run on non-Linux hosts.
 
 ## Support

@@ -163,9 +163,15 @@ impl Pages {
         self.addr as *mut u8
     }
 
-    fn slice(&self) -> &mut [u8] {
-        // SAFETY: the firmware gave us `count` whole pages at `addr`; nothing else uses them.
+    fn slice(&mut self) -> &mut [u8] {
+        // SAFETY: the firmware gave us `count` whole pages at `addr`; nothing else uses them,
+        // and `&mut self` makes this the only borrow.
         unsafe { core::slice::from_raw_parts_mut(self.ptr(), self.count * PAGE) }
+    }
+
+    fn bytes(&self) -> &[u8] {
+        // SAFETY: as above, shared.
+        unsafe { core::slice::from_raw_parts(self.ptr(), self.count * PAGE) }
     }
 
 }
@@ -269,7 +275,7 @@ impl Volume {
         let f = self.open_file(path)?;
         let r = (|| {
             let size = Self::size(f)?;
-            let pages = Pages::new(size)?;
+            let mut pages = Pages::new(size)?;
             Self::read_into(f, pages.slice(), size, progress)?;
             Ok((pages, size))
         })();
@@ -335,7 +341,7 @@ fn file_device_path(device: Handle, path: &str) -> Option<Pages> {
     }
     let chars = path.chars().count() + 1;
     let file_node = 4 + 2 * chars;
-    let pages = Pages::new(prefix + file_node + 4).ok()?;
+    let mut pages = Pages::new(prefix + file_node + 4).ok()?;
     let out = pages.slice();
     // SAFETY: copying `prefix` bytes of the firmware's device path into our pages.
     unsafe { ptr::copy_nonoverlapping(dp as *const u8, out.as_mut_ptr(), prefix) };
@@ -440,11 +446,11 @@ fn get_u64_var(name: &str) -> Option<u64> {
 }
 
 fn secure_boot_on() -> bool {
-    get_u64_var("SecureBoot").map_or(false, |v| v & 0xFF == 1)
+    get_u64_var("SecureBoot").is_some_and(|v| v & 0xFF == 1)
 }
 
 fn can_enter_setup() -> bool {
-    get_u64_var("OsIndicationsSupported").map_or(false, |v| v & OS_INDICATIONS_BOOT_TO_FW_UI != 0)
+    get_u64_var("OsIndicationsSupported").is_some_and(|v| v & OS_INDICATIONS_BOOT_TO_FW_UI != 0)
 }
 
 fn reboot_to_setup() -> ! {
@@ -505,7 +511,7 @@ fn boot(image: Handle, device: Handle, vol: &Volume, e: &Entry, esp: Option<&[u8
         }
     }
     let initrd = if total > 0 {
-        let pages = match Pages::new(total) {
+        let mut pages = match Pages::new(total) {
             Ok(p) => p,
             Err(s) => return fail("not enough memory for", "the initramfs", s),
         };
@@ -732,7 +738,7 @@ extern "efiapi" fn efi_main(image: Handle, system_table: *mut SystemTable) -> St
 
     // The config file stays in memory for the whole run: entries point into it.
     let cfg_pages = vol.read(CONFIG_PATH, false).ok();
-    let text = cfg_pages.as_ref().and_then(|(p, size)| core::str::from_utf8(&p.slice()[..*size]).ok());
+    let text = cfg_pages.as_ref().and_then(|(p, size)| core::str::from_utf8(&p.bytes()[..*size]).ok());
     let cfg = match text {
         Some(t) => Config::parse(t),
         None => Config::builtin(),
