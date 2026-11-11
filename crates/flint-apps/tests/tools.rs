@@ -354,3 +354,9 @@ fn mount_lists_and_ps_shows_processes() {
     assert_eq!(run(&["umount"]).code, 1);
     assert_eq!(run(&["umount", "/definitely/not/mounted"]).code, 1);
 }
+
+#[test]
+fn xargs_leaves_command_options_alone() {
+    let r = run_stdin(&["xargs", "-n", "1", "echo", "-n", "x"], "a b");
+    assert_eq!(r.stdout, "x ax b");
+}

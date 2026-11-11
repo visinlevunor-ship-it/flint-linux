@@ -11,7 +11,7 @@
 #   LINUX     unpacked kernel + firmware from image/fetch-kernel.sh   (default build/linux)
 #   BASE      a Flint root filesystem image to use instead of building one; by default
 #             target/flint-base-pc.img is (re)built with the bare-metal services and boot
-#             tasks (needs BUSYBOX, like image/build-initramfs.sh)
+#             tasks
 #   BOOTEFI   the bootloader     (default boot/target/x86_64-unknown-uefi/release/flint-boot.efi)
 #   BOOTCFG   boot menu file     (default image/boot.cfg)
 #   DRIVERS   driver selection   (default image/drivers.conf)

@@ -1,11 +1,11 @@
 #!/bin/sh
 # Build Flint's root filesystem as an initramfs (newc cpio).
 #
-#   BUSYBOX=/path/to/static-busybox image/build-initramfs.sh [output.img]
+#   image/build-initramfs.sh [output.img]
+#
+# Every program in the image is Flint's own; nothing else is needed.
 #
 # Environment:
-#   BUSYBOX   (required) static Linux x86_64 busybox: stopgap for the few tools Flint does
-#             not have yet (grep, sed, date, ...)
 #   TARGET    cargo target the Flint binaries were built for (default x86_64-unknown-linux-musl)
 #   PROFILE   cargo profile directory                         (default release)
 #   BINDIR    the built Linux binaries flint, su, passwd     (default target/$TARGET/$PROFILE)
@@ -29,14 +29,12 @@ RTBINDIR=${RTBINDIR:-$ROOT/rt/target/$TARGET/$PROFILE}
 SERVICES=${SERVICES:-$ROOT/image/etc/flint/services.qemu}
 BOOT=${BOOT:-$ROOT/image/etc/flint/boot.qemu}
 OUT=${1:-$ROOT/target/flint-base.img}
-: "${BUSYBOX:?set BUSYBOX to a static Linux x86_64 busybox binary}"
 
 for f in flint su passwd; do
     [ -x "$BINDIR/$f" ] || { echo "missing $BINDIR/$f (build with: cargo build --release --workspace --target $TARGET)" >&2; exit 1; }
 done
 MKIMAGE="$HOSTBIN/flint-mkimage"
 [ -x "$MKIMAGE" ] || { echo "missing $MKIMAGE (build with: cargo build --release -p flint-mkimage)" >&2; exit 1; }
-[ -f "$BUSYBOX" ] || { echo "BUSYBOX=$BUSYBOX does not exist" >&2; exit 1; }
 
 RFS=$(mktemp -d "${TMPDIR:-/tmp}/flint-rootfs.XXXXXX")
 trap 'rm -rf "$RFS"' EXIT
@@ -73,14 +71,6 @@ chmod 4755 "$RFS/bin/su" "$RFS/bin/passwd"
 if [ -x "$RTBINDIR/flint-version" ]; then
     cp "$RTBINDIR/flint-version" "$RFS/usr/lib/flint/version-nolibc"
 fi
-
-# Stopgap: busybox for whatever Flint does not provide yet.
-cp "$BUSYBOX" "$RFS/bin/busybox"
-chmod 755 "$RFS/bin/busybox"
-for a in dmesg free date grep sed awk find sort uniq tr cut xargs less vi tee basename dirname \
-         which readlink stat df du mknod mkfifo; do
-    [ -e "$RFS/bin/$a" ] || [ -h "$RFS/bin/$a" ] || ln -s busybox "$RFS/bin/$a"
-done
 
 cp "$BOOT" "$RFS/etc/flint/boot"
 cp "$SERVICES" "$RFS/etc/flint/services"

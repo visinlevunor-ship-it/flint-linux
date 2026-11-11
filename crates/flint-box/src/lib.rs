@@ -1,6 +1,7 @@
 //! The core tools (`ls`, `cat`, `cp`, `mount`, ...), run through the `flint` multicall binary.
 
 mod applets;
+pub mod regex;
 mod util;
 
 pub use applets::TABLE;

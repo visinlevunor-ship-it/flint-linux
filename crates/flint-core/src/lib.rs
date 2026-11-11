@@ -12,6 +12,8 @@ pub mod power;
 #[cfg(feature = "std")]
 pub mod sys;
 #[cfg(feature = "std")]
+pub mod term;
+#[cfg(feature = "std")]
 pub mod tty;
 pub mod version;
 
