@@ -76,7 +76,7 @@ menu entry) skips all of this.
 ## Kernels and updates
 
 - **Kernels** are packages (`linux-zen`, `linux-lts`, `linux-upstream`, built by
-  `ports/kernels/build.sh`). `pkg kernels` copies each one to `\FLINT\KERNELS\NAME\`, puts its
+  `ports/kernels/build.sh` in [flint-packages](https://github.com/visinlevunor-ship-it/flint-packages)). `pkg kernels` copies each one to `\FLINT\KERNELS\NAME\`, puts its
   modules beside the others in `\FLINT\DRIVERS\modules\`, and adds a boot menu entry.
 - **The base system** is four packages: `flint-system`, `flint-kernel`, `flint-firmware` and
   `flint-gpu-firmware`. `flint-update` upgrades them and every other package, then copies what
@@ -148,7 +148,6 @@ crates/flint-mkimage   host tool: initramfs, drivers, disk images
 boot/                  flint-boot, the UEFI bootloader (separate workspace)
 rt/                    flint-rt and libc-free programs (separate workspace)
 packages/              example package sources
-ports/                 recipes for third-party programs
 image/                 build scripts, boot menu, driver list, default /etc
 tests/                 pty and QEMU end-to-end tests
 ```

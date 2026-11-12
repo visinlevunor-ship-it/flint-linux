@@ -70,7 +70,7 @@ net wifi scan                     # Wi-Fi (a cable just works)
 net wifi connect "My Network"
 net                               # status
 
-pkg install neovim tmux git       # install software
+pkg install zsh neovim ripgrep    # install software
 pkg upgrade                       # upgrade packages
 flint-update                      # update everything, base system included
 
@@ -81,8 +81,9 @@ pkg kernels default zen           # make it the default
 flint-install                     # put Flint on a disk
 ```
 
-The repository currently has **neovim, tmux, git, curl, nano, micro, htop, btop,
-fastfetch** and **ca-certificates**. They are all static builds from [`ports/`](ports/).
+The [package repository](https://github.com/visinlevunor-ship-it/flint-packages) has 34 static
+packages, including **zsh, bash, neovim, tmux, git, curl, openssh, rsync, ripgrep, fd, bat, eza,
+fzf, zoxide, jq, btop, htop** and **fastfetch**.
 
 `flint-install` asks which disk to use, then gives you two choices:
 - **Free space:** Flint adds two partitions and doesn't touch the existing ones, so it can
@@ -118,7 +119,7 @@ Not there yet:
 
 - [Design](docs/design.md): how booting, drivers, persistence, networking and the one-binary layout work
 - [Packages](docs/packages.md): `pkg`, running your own signed repository, how packages are kept safe
-- [Ports](ports/README.md): building third-party software for Flint
+- [flint-packages](https://github.com/visinlevunor-ship-it/flint-packages): the package repository, and the recipes (ports) that build it
 - [Testing](docs/testing.md): unit, pty and QEMU tests
 
 ## Support

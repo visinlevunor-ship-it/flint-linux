@@ -36,10 +36,11 @@ pkg index repo/                      # -> repo/INDEX (sizes and checksums)
 pkg --root /tmp/t --repo repo/ install hello
 ```
 
-Third-party programs are built from [`ports/`](../ports/README.md):
+Third-party programs are built by the recipes in [flint-packages](https://github.com/visinlevunor-ship-it/flint-packages) (`ports/`), next to the
+packages they make:
 
 ```sh
-ports/neovim/build.sh /tmp/nvim && pkg build /tmp/nvim repo/x86_64/
+ports/neovim/build.sh /tmp/nvim && pkg build /tmp/nvim x86_64/   # in flint-packages
 ```
 
 ## Running your own repository
@@ -60,7 +61,8 @@ The rest comes from the build machine:
 
 ```sh
 image/build-system-packages.sh repo/x86_64/                              # base system, for flint-update
-ports/kernels/build.sh zen /tmp/zen && pkg build /tmp/zen repo/x86_64/   # zen, lts, upstream
+FLINT=$PWD ../flint-packages/ports/kernels/build.sh zen /tmp/zen     # zen, lts, upstream
+pkg build /tmp/zen repo/x86_64/
 ```
 
 ## How it stays safe
