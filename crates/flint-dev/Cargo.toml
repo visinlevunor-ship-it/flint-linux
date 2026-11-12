@@ -8,4 +8,5 @@ description = "Hardware support: modload (driver autoloading), devd (hotplug), l
 [dependencies]
 flint-core.workspace = true
 flint-disk = { path = "../flint-disk" }
+flint-gzip = { path = "../flint-gzip" }
 libc.workspace = true

@@ -13,9 +13,10 @@ use std::process::ExitCode;
 const USAGE: &str = "\
 usage: flint-mkimage cpio DIR OUTPUT
          pack DIR as a newc cpio archive (everything owned by root)
-       flint-mkimage drivers CONFIG KERNEL_ROOT FIRMWARE_DIR MODULES_OUT FIRMWARE_OUT
+       flint-mkimage drivers CONFIG KERNEL_ROOT FIRMWARE_DIR MODULES_OUT FIRMWARE_OUT [GPU_OUT]
          pick modules (lib/modules/VERSION under KERNEL_ROOT) and firmware by CONFIG,
-         generate modules.dep/alias/softdep, write both as cpio archives
+         generate modules.dep/alias/softdep, write them as cpio archives (GPU firmware,
+         as CONFIG's gpu-firmware lines say, separately into GPU_OUT if given)
        flint-mkimage disk OUTPUT SIZE_MIB DIR [LABEL]
          a GPT disk image with one EFI system partition (FAT32, label FLINT by default)
          holding DIR (long file names are fine)";
@@ -31,7 +32,11 @@ fn run(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         Some("drivers") => {
-            let [_, conf, kroot, fw, mods_out, fw_out] = args else { return Err(USAGE.into()) };
+            let (conf, kroot, fw, mods_out, fw_out, gpu_out) = match args {
+                [_, c, k, f, m, o] => (c, k, f, m, o, None),
+                [_, c, k, f, m, o, g] => (c, k, f, m, o, Some(g)),
+                _ => return Err(USAGE.into()),
+            };
             // Walk the real directories, even if the paths given are symlinks to them.
             let real = |p: &String| fs::canonicalize(p).map(|r| r.to_string_lossy().into_owned()).map_err(|e| format!("{p}: {e}"));
             let (kroot, fw) = (&real(kroot)?, &real(fw)?);
@@ -41,7 +46,16 @@ fn run(args: &[String]) -> Result<(), String> {
             let sel = drivers::select_modules(&moddir, &version, &cfg)?;
             let msize = drivers::write_modules_img(&moddir, &sel, Path::new(mods_out))?;
             let choice = drivers::select_firmware(Path::new(fw), &sel.firmware_wanted, &cfg.firmware)?;
-            let fsize = drivers::write_firmware_img(Path::new(fw), &choice.files, Path::new(fw_out))?;
+            // GPU firmware in its own image keeps each image under 100 MB (a limit of some
+            // hosting) and lets a system without those GPUs leave it out.
+            let (gpu, rest): (std::collections::BTreeSet<String>, _) = match gpu_out {
+                Some(_) => choice.files.iter().cloned().partition(|f| cfg.gpu_firmware.iter().any(|p| f.starts_with(p.as_str()))),
+                None => (Default::default(), choice.files.clone()),
+            };
+            let mut fsize = drivers::write_firmware_img(Path::new(fw), &rest, Path::new(fw_out))?;
+            if let Some(g) = gpu_out {
+                fsize += drivers::write_firmware_img(Path::new(fw), &gpu, Path::new(g))?;
+            }
             println!("kernel {version}: {} modules ({} KiB), {} firmware files ({} KiB)", sel.modules.len(), msize / 1024, choice.files.len(), fsize / 1024);
             if !choice.missing.is_empty() {
                 println!("{} declared firmware names not found (drivers that need them will say so in dmesg)", choice.missing.len());

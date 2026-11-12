@@ -53,6 +53,7 @@ version = "0.1.0"
 dependencies = [
  "flint-core",
  "flint-disk",
+ "flint-gzip",
  "libc",
 ]
 

@@ -19,6 +19,8 @@ pub struct Config {
     pub skip: Vec<String>,
     /// Firmware files to include besides what modules declare (glob patterns).
     pub firmware: Vec<String>,
+    /// Firmware under these directories goes into the separate GPU firmware image.
+    pub gpu_firmware: Vec<String>,
 }
 
 impl Config {
@@ -35,7 +37,8 @@ impl Config {
                 "module" => c.include.push(v),
                 "skip" => c.skip.push(v),
                 "firmware" => c.firmware.push(v),
-                _ => return Err(format!("line {}: unknown key '{k}' (module, skip or firmware)", n + 1)),
+                "gpu-firmware" => c.gpu_firmware.push(v.trim_end_matches('/').to_string() + "/"),
+                _ => return Err(format!("line {}: unknown key '{k}' (module, skip, firmware or gpu-firmware)", n + 1)),
             }
         }
         Ok(c)

@@ -39,8 +39,8 @@ impl<'a> Entry<'a> {
 pub const DEFAULT_ENTRY: Entry<'static> = Entry {
     title: "Flint Linux",
     kernel: "\\FLINT\\KERNEL",
-    initrds: ["\\FLINT\\BASE.IMG", "\\FLINT\\MODULES.IMG", "\\FLINT\\FIRMWARE.IMG", "", "", "", "", ""],
-    n_initrds: 3,
+    initrds: ["\\FLINT\\BASE.IMG", "\\FLINT\\MODULES.IMG", "\\FLINT\\FIRMWARE.IMG", "\\FLINT\\GPU.IMG", "", "", "", ""],
+    n_initrds: 4,
     options: "quiet",
 };
 

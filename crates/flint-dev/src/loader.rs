@@ -47,10 +47,20 @@ fn insmod(path: &Path, params: &str) -> io::Result<()> {
     // SAFETY: finit_module takes a valid fd, a NUL-terminated parameter string and flags.
     let rc = unsafe { libc::syscall(libc::SYS_finit_module, f.as_raw_fd(), p.as_ptr(), flags) };
     if rc == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
+        return Ok(());
     }
+    let err = io::Error::last_os_error();
+    // A kernel without in-kernel decompression (or for another format) cannot take a
+    // compressed file: gzip ones are unpacked here and handed over as plain data.
+    let refused = matches!(err.raw_os_error(), Some(libc::EOPNOTSUPP | libc::EINVAL | libc::ENOEXEC));
+    if refused && name.ends_with(".gz") {
+        let data = fs::read(path)?;
+        let plain = flint_gzip::decompress(&data, 1 << 30).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("{name}: {e}")))?;
+        // SAFETY: init_module takes the module image, its length and the parameter string.
+        let rc = unsafe { libc::syscall(libc::SYS_init_module, plain.as_ptr(), plain.len(), p.as_ptr()) };
+        return if rc == 0 { Ok(()) } else { Err(io::Error::last_os_error()) };
+    }
+    Err(err)
 }
 
 impl<'a> Loader<'a> {

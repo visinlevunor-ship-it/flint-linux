@@ -2,6 +2,7 @@
 
 mod control;
 mod db;
+mod kernels;
 mod ops;
 mod pack;
 mod paths;
@@ -36,6 +37,7 @@ const USAGE: &str = "usage: pkg [--root DIR] [--repo DIR-OR-URL]... [-n|--dry-ru
   repos               show the configured repositories
   build SRC [OUT]     build NAME-VERSION.fpk from SRC/control and SRC/files
   index DIR           write DIR/INDEX for the packages in DIR
+  kernels             list kernels; kernels install|remove|default FLAVOR (zen, lts, ...)
   key new NAME [DIR]  make a signing key pair: DIR/NAME.key (secret) and DIR/NAME.pub
   sign DIR KEYFILE    sign DIR/INDEX, writing DIR/INDEX.sig
 
@@ -44,6 +46,7 @@ ROOT/etc/flint/pkg.conf (lines: repo /path/to/dir, or repo https://host/path).
 A remote repository's INDEX must be signed by a key in ROOT/etc/flint/keys/*.pub;
 packages are checked against the SHA-256 in that signed INDEX.";
 
+#[derive(Clone)]
 struct Opts {
     root: PathBuf,
     repos: Vec<RepoSpec>,
@@ -223,11 +226,107 @@ fn run(argv: Vec<String>) -> Result<i32, String> {
         return Err(format!("options go before the command: '{bad}'"));
     }
     let db = Db::open(&o.root);
+    // "kernels" only reads, or calls run() again for the change it makes.
     let changes = matches!(cmd, "install" | "upgrade" | "remove" | "del" | "autoremove" | "update");
+    let touches_packages = matches!(cmd, "install" | "upgrade" | "remove" | "del" | "autoremove");
     if changes && !o.dry_run && !o.root.is_dir() {
         return Err(format!("install root {} is not a directory", o.root.display()));
     }
-    let _lock = if changes && !o.dry_run { Some(Lock::acquire(&o.root)?) } else { None };
+    let lock = if changes && !o.dry_run { Some(Lock::acquire(&o.root)?) } else { None };
+    let status = command(&o, cmd, rest, &db)?;
+    drop(lock);
+    if touches_packages && !o.dry_run {
+        // Kernel packages also live on the boot partition, with a boot menu entry each.
+        kernels::sync(&o.root)?;
+    }
+    Ok(status)
+}
+
+fn kernels_cmd(o: &Opts, rest: &[String], db: &Db) -> Result<i32, String> {
+    let again = |args: &[&str]| -> Result<i32, String> {
+        let mut argv = vec!["pkg".to_string(), "--root".to_string(), o.root.display().to_string()];
+        for r in &o.repos {
+            argv.push("--repo".into());
+            argv.push(r.to_string());
+        }
+        if o.dry_run {
+            argv.push("-n".into());
+        }
+        argv.extend(args.iter().map(|s| s.to_string()));
+        run(argv)
+    };
+    match (rest.first().map(String::as_str), rest.get(1)) {
+        (None | Some("list"), None) => {
+            let _ = refresh(o, false);
+            let installed = kernels::installed(&o.root);
+            let running = kernels::running_release();
+            let mark = |f: &str| {
+                let mut m = Vec::new();
+                if kernels::chosen_default(&o.root) == f {
+                    m.push("default");
+                }
+                let rel = if f == kernels::BUILTIN { None } else { kernels::release(&o.root, f) };
+                if rel.as_deref() == Some(running.as_str()) || (f == kernels::BUILTIN && !installed.iter().any(|i| kernels::release(&o.root, i).as_deref() == Some(running.as_str()))) {
+                    m.push("running");
+                }
+                if m.is_empty() { String::new() } else { format!(" ({})", m.join(", ")) }
+            };
+            println!("installed:");
+            println!("  {:<10} the kernel Flint came with{}", kernels::BUILTIN, mark(kernels::BUILTIN));
+            for f in &installed {
+                println!("  {:<10} {}{}", f, kernels::release(&o.root, f).unwrap_or_default(), mark(f));
+            }
+            let mut available: Vec<(String, String, String)> = Vec::new();
+            for r in repos(o).unwrap_or_default() {
+                for e in r.entries {
+                    if let Some(f) = kernels::flavor_of(&e.control.name) {
+                        if !installed.iter().any(|i| i == f) && !available.iter().any(|(a, _, _)| a == f) {
+                            available.push((f.to_string(), e.control.version.clone(), e.control.description.clone()));
+                        }
+                    }
+                }
+            }
+            available.sort();
+            if !available.is_empty() {
+                println!("available (pkg kernels install NAME):");
+                for (f, v, d) in available {
+                    println!("  {f:<10} {v:<14} {d}");
+                }
+            }
+            Ok(0)
+        }
+        (Some("install"), Some(f)) => {
+            let status = again(&["install", &kernels::package_name(f)])?;
+            if status == 0 && !o.dry_run {
+                println!("The boot menu now has \"Flint Linux ({f} kernel)\". To start it by default: pkg kernels default {f}");
+            }
+            Ok(status)
+        }
+        (Some("remove"), Some(f)) => {
+            if f == kernels::BUILTIN {
+                return Err("the generic kernel came with Flint and stays".into());
+            }
+            if db.load(&kernels::package_name(f))?.is_none() {
+                return Err(format!("the {f} kernel is not installed"));
+            }
+            again(&["remove", &kernels::package_name(f)])
+        }
+        (Some("default"), Some(f)) => {
+            if f != kernels::BUILTIN && !kernels::installed(&o.root).contains(f) {
+                return Err(format!("the {f} kernel is not installed (pkg kernels install {f})"));
+            }
+            kernels::set_default(&o.root, f).map_err(|e| e.to_string())?;
+            kernels::sync(&o.root)?;
+            println!("{f} starts by default from the next boot");
+            Ok(0)
+        }
+        _ => Err("usage: pkg kernels [list]
+       pkg kernels install|remove|default FLAVOR".into()),
+    }
+}
+
+fn command(o: &Opts, cmd: &str, rest: &[String], db: &Db) -> Result<i32, String> {
+    let o = o.clone();
 
     match cmd {
         "build" => {
@@ -420,6 +519,7 @@ fn run(argv: Vec<String>) -> Result<i32, String> {
                 return Ok(1);
             }
         }
+        "kernels" | "kernel" => return kernels_cmd(&o, rest, db),
         "repos" => {
             for spec in repo_specs(&o)? {
                 match &spec {
