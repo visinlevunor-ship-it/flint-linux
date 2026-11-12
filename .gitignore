@@ -4,3 +4,4 @@ target/
 *.cpio.gz
 # pkg signing keys must never be committed
 *.key
+build/
