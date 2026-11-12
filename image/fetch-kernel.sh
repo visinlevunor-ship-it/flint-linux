@@ -35,6 +35,8 @@ c69233da5e4927a8a9e1c2e963fd52c5f5cb2e14c4823d68cba98e59cab509e9 pool/main/l/lin
 284873f9312a9a267d96213cfab229c1a6e3924a6149c3b0fdc1a42a853e7b22 pool/main/l/linux-firmware-misc/linux-firmware-misc_20240318.git3b128b60-0ubuntu3.1_all.deb firmware
 f333f7c1525949720b87e67dfee80e129ffff33d61fa97050428cd720392563c pool/main/l/linux-firmware-qualcomm-wireless/linux-firmware-qualcomm-wireless_20240318.git3b128b60-0ubuntu3.1_all.deb firmware
 93b11d4f7d086727f6d0fa980c4ee8439dbad50305e8958ca3f71be272f64833 pool/main/l/linux-firmware-realtek/linux-firmware-realtek_20240318.git3b128b60-0ubuntu3.1_all.deb firmware
+1d6745350c99dd4b54f576994def3dee1c2e6752762731022df7ee7af39b3b55 pool/main/l/linux-firmware-amd-graphics/linux-firmware-amd-graphics_20261110.git69e51bb2-0ubuntu1_all.deb firmware
+f417c24bcf4d0e8d2f4a4d696ab14f8bffa8ffc9870b31f3d63aea0b73cdfa8b pool/main/l/linux-firmware-intel-graphics/linux-firmware-intel-graphics_20261110.git69e51bb2-0ubuntu1_all.deb firmware
 "
 
 download() { # URL OUT
