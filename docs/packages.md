@@ -25,6 +25,23 @@ Repositories are listed in `/etc/flint/pkg.conf`, one per line: `repo /path/to/d
 never overwritten once you have edited them: an upgrade saves the new version as
 `FILE.flint-new`, and a removal keeps your file.
 
+## Configurations
+
+Some programs come in several configurations. dwm and st are set up by recompiling them, so
+each configuration is its own build; other programs have a configuration package with
+their config files. Configurations are packages with a `config-of: PROGRAM` line, and one
+per program is installed:
+
+```sh
+pkg config                     # every program's configurations (* = installed)
+pkg config dwm                 # just dwm's
+pkg config install dwm-flint   # use dwm-flint (whatever dwm configuration was there goes)
+pkg config remove dwm-flint
+```
+
+To publish one, give its package `config-of: dwm` in the control file and the same files
+as the other configurations of dwm (`/usr/bin/dwm` here); `pkg config install` swaps them.
+
 ## Making packages
 
 A package source is a directory with a `control` file and a `files/` tree, which is installed

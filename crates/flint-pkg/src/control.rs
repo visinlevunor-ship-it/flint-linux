@@ -16,6 +16,9 @@ pub struct Control {
     pub conflicts: Vec<String>,
     /// Paths (relative to /) of files an upgrade must not overwrite when the user changed them.
     pub config: Vec<String>,
+    /// This package is a configuration of another program (`config-of: dwm`): one of a set
+    /// of interchangeable builds or settings, swapped with `pkg config install`.
+    pub config_of: Option<String>,
 }
 
 pub const THIS_ARCH: &str = "x86_64";
@@ -52,6 +55,12 @@ impl Control {
                     }
                 }
                 "config" => c.config.extend(split_list(v).into_iter().map(|s| s.trim_start_matches('/').to_string())),
+                "config-of" => {
+                    if !valid_name(v) {
+                        return Err(format!("bad program name '{v}' in config-of"));
+                    }
+                    c.config_of = Some(v.to_string());
+                }
                 _ => {}
             }
         }
@@ -81,6 +90,9 @@ impl Control {
         }
         if !self.config.is_empty() {
             s.push_str(&format!("config: {}\n", self.config.join(", ")));
+        }
+        if let Some(p) = &self.config_of {
+            s.push_str(&format!("config-of: {p}\n"));
         }
         s
     }

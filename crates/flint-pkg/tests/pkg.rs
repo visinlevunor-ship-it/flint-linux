@@ -539,3 +539,40 @@ fn packages_are_gzip_and_old_uncompressed_ones_still_install() {
     install_file(&e, "src/libgreet-1.0.fpk").fails("libgreet-1.0.fpk");
     assert!(!e.root("usr/lib/libgreet.txt").exists());
 }
+
+#[test]
+fn config_lists_and_swaps_configurations_of_a_program() {
+    let e = Env::new();
+    // two builds of the same program, sharing its file, plus an unrelated package
+    e.publish("plain", "name: wm\nversion: 1\ndescription: wm as upstream ships it\nconfig-of: wm\n", &[("usr/bin/wm", "plain\n", 0o755)]);
+    e.publish("fancy", "name: wm-fancy\nversion: 2\ndescription: gaps and a bar\nconfig-of: wm\n", &[("usr/bin/wm", "fancy\n", 0o755)]);
+    e.publish("term", "name: term-dark\nversion: 1\ndescription: dark colours\nconfig-of: term\n", &[("etc/term.conf", "dark\n", 0o644)]);
+    e.publish("other", "name: other\nversion: 1\n", &[("opt/other", "x\n", 0o644)]);
+
+    let l = e.pkg(&["config"]);
+    assert_eq!(
+        l.ok().stdout,
+        "term:\n   term-dark        dark colours\nwm:\n   wm               wm as upstream ships it\n   wm-fancy         gaps and a bar\n(* installed; switch with: pkg config install NAME)\n"
+    );
+    assert!(!e.pkg(&["config", "wm"]).ok().stdout.contains("term"));
+    e.pkg(&["config", "nope"]).fails("no configurations for nope");
+
+    e.pkg(&["config", "install", "wm"]).ok();
+    assert_eq!(read(&e.root("usr/bin/wm")), "plain\n");
+    // a plain install of another configuration runs into the shared file
+    e.pkg(&["install", "wm-fancy"]).fails("");
+    // pkg config swaps it
+    assert!(e.pkg(&["config", "install", "wm-fancy"]).ok().stdout.contains("wm now uses wm-fancy"));
+    assert_eq!(read(&e.root("usr/bin/wm")), "fancy\n");
+    let list = e.pkg(&["list"]).ok().stdout.clone();
+    assert!(list.contains("wm-fancy 2") && !list.contains("wm 1"), "{list}");
+    assert!(e.pkg(&["config", "wm"]).ok().stdout.contains(" * wm-fancy"));
+    assert!(e.pkg(&["config", "install", "wm-fancy"]).ok().stdout.contains("uses wm-fancy already"));
+    e.pkg(&["config", "install", "other"]).fails("no configuration named other");
+    // and back
+    e.pkg(&["config", "install", "wm"]).ok();
+    assert_eq!(read(&e.root("usr/bin/wm")), "plain\n");
+    e.pkg(&["config", "remove", "wm"]).ok();
+    assert!(!e.root("usr/bin/wm").exists());
+    e.pkg(&["config", "remove", "wm"]).fails("not an installed configuration");
+}

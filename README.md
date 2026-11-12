@@ -76,6 +76,7 @@ pkg install zsh neovim ripgrep    # install software
 pkg upgrade                       # upgrade packages
 flint-update                      # update everything, base system included
 
+pkg config dwm                    # configurations of a program; pkg config install NAME
 pkg kernels                       # list kernels
 pkg kernels install zen           # add one (it gets its own boot menu entry)
 pkg kernels default zen           # make it the default

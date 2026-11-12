@@ -43,6 +43,8 @@ const USAGE: &str = "usage: pkg [--root DIR] [--repo DIR-OR-URL]... [-n|--dry-ru
   build SRC [OUT]     build NAME-VERSION.fpk from SRC/control and SRC/files
   index DIR           write DIR/INDEX for the packages in DIR
   kernels             list kernels; kernels install|remove|default FLAVOR (zen, lts, ...)
+  config [PROGRAM]    list configurations (e.g. dwm-flint for dwm); config install NAME
+                      swaps the installed configuration of that program for NAME
   key new NAME [DIR]  make a signing key pair: DIR/NAME.key (secret) and DIR/NAME.pub
   sign DIR KEYFILE    sign DIR/INDEX, writing DIR/INDEX.sig
 
@@ -330,6 +332,109 @@ fn kernels_cmd(o: &Opts, rest: &[String], db: &Db) -> Result<i32, String> {
     }
 }
 
+/// Configurations: packages with `config-of: PROGRAM`, of which one per program is installed.
+fn config_cmd(o: &Opts, rest: &[String], db: &Db) -> Result<i32, String> {
+    let again = |args: &[&str]| -> Result<i32, String> {
+        let mut argv = vec!["pkg".to_string(), "--root".to_string(), o.root.display().to_string()];
+        for r in &o.repos {
+            argv.push("--repo".into());
+            argv.push(r.to_string());
+        }
+        if o.dry_run {
+            argv.push("-n".into());
+        }
+        argv.extend(args.iter().map(|s| s.to_string()));
+        run(argv)
+    };
+    let installed: Vec<control::Control> = db.all()?.into_iter().map(|i| i.control).filter(|c| c.config_of.is_some()).collect();
+    let available = |o: &Opts| -> Vec<control::Control> {
+        let mut all: Vec<control::Control> =
+            repos(o).unwrap_or_default().into_iter().flat_map(|r| r.entries.into_iter().map(|e| e.control)).filter(|c| c.config_of.is_some()).collect();
+        // newest version of each
+        all.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| compare(&b.version, &a.version)));
+        all.dedup_by(|a, b| a.name == b.name);
+        all
+    };
+    let usage = "usage: pkg config [list] [PROGRAM]\n       pkg config install NAME\n       pkg config remove NAME";
+    match (rest.first().map(String::as_str), rest.get(1).map(String::as_str), rest.len()) {
+        (None, _, _) | (Some("list"), _, 1 | 2) => config_list(o, &installed, available(o), rest.get(1).map(String::as_str)),
+        (Some("install"), Some(name), 2) => {
+            let _ = refresh(o, false);
+            let Some(new) = available(o).into_iter().find(|c| c.name == name) else {
+                return Err(format!("no configuration named {name} (see: pkg config)"));
+            };
+            let prog = new.config_of.clone().unwrap_or_default();
+            let old: Vec<&str> = installed
+                .iter()
+                .filter(|c| c.config_of.as_deref() == Some(prog.as_str()) && c.name != name)
+                .map(|c| c.name.as_str())
+                .collect();
+            if old.is_empty() && installed.iter().any(|c| c.name == name) {
+                println!("{prog} uses {name} already");
+                return Ok(0);
+            }
+            // one configuration per program: the old one goes first (they share files)
+            if !old.is_empty() {
+                let status = again(&[&["remove"][..], &old[..]].concat())?;
+                if status != 0 {
+                    return Ok(status);
+                }
+            }
+            let status = again(&["install", name])?;
+            if status != 0 && !old.is_empty() && !o.dry_run {
+                eprintln!("pkg: installing {name} failed; putting back {}", old.join(", "));
+                again(&[&["install"][..], &old[..]].concat())?;
+                return Ok(status);
+            }
+            if status == 0 && !o.dry_run {
+                println!("{prog} now uses {name}");
+            }
+            Ok(status)
+        }
+        (Some("remove"), Some(name), 2) => {
+            if !installed.iter().any(|c| c.name == name) {
+                return Err(format!("{name} is not an installed configuration"));
+            }
+            again(&["remove", name])
+        }
+        (Some(prog), None, 1) if prog != "install" && prog != "remove" => config_list(o, &installed, available(o), Some(prog)),
+        _ => Err(usage.into()),
+    }
+}
+
+fn config_list(o: &Opts, installed: &[control::Control], available: Vec<control::Control>, only: Option<&str>) -> Result<i32, String> {
+    let _ = refresh(o, false);
+    let mut all = available;
+    for c in installed {
+        if !all.iter().any(|a| a.name == c.name) {
+            all.push(c.clone());
+        }
+    }
+    let mut programs: Vec<String> = all.iter().filter_map(|c| c.config_of.clone()).collect();
+    programs.sort();
+    programs.dedup();
+    if let Some(p) = only {
+        programs.retain(|x| x == p);
+        if programs.is_empty() {
+            println!("no configurations for {p}");
+            return Ok(1);
+        }
+    }
+    if programs.is_empty() {
+        println!("no configurations in the repositories");
+        return Ok(0);
+    }
+    for p in programs {
+        println!("{p}:");
+        for c in all.iter().filter(|c| c.config_of.as_deref() == Some(p.as_str())) {
+            let mark = if installed.iter().any(|i| i.name == c.name) { "*" } else { " " };
+            println!(" {mark} {:<16} {}", c.name, c.description);
+        }
+    }
+    println!("(* installed; switch with: pkg config install NAME)");
+    Ok(0)
+}
+
 fn command(o: &Opts, cmd: &str, rest: &[String], db: &Db) -> Result<i32, String> {
     let o = o.clone();
 
@@ -525,6 +630,7 @@ fn command(o: &Opts, cmd: &str, rest: &[String], db: &Db) -> Result<i32, String>
             }
         }
         "kernels" | "kernel" => return kernels_cmd(&o, rest, db),
+        "config" | "configs" => return config_cmd(&o, rest, db),
         "repos" => {
             for spec in repo_specs(&o)? {
                 match &spec {
