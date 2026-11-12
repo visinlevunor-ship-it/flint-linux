@@ -93,7 +93,7 @@ try:
 
     q.login("root", "flint", "root@flint:~# "); step("root logs in; sh prompt shows user, host and ~")
     q.sh("echo R-$((6*7))", "R-42"); step("shell arithmetic")
-    q.sh("echo B-$(flint --list | wc -l) L-$(ls /bin /sbin | grep -c '^flint-')", "B-71 L-0"); step("one flint binary, 71 programs, no flint-* commands")
+    q.sh("echo B-$(flint --list | wc -l) L-$(ls /bin /sbin | grep -c '^flint-')", "B-76 L-2"); step("one flint binary, 76 programs, only flint-install and flint-update named flint-*")
     q.sh("echo X-$(ls -l /bin /sbin | grep -c busybox)", "X-0"); step("no busybox anywhere")
     q.sh("printf 'b 2\\na 1\\nc 3\\n' | sort | awk '{s+=$2; print $1} END {print s}' | sed 's/^/>/' | tr -d '\\n'; echo", ">a>b>c>6"); step("sort | awk | sed | tr pipeline")
     q.sh("find /etc -name 'os-*' -type f | xargs grep -c '^ID=flint'", "1"); step("find | xargs grep")
