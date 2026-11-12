@@ -20,6 +20,7 @@ bin false
 bin fetch
 bin find
 sbin flint-install
+sbin flint-update
 bin free
 bin grep
 bin gunzip

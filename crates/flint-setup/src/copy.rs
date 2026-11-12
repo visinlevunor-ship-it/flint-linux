@@ -103,6 +103,7 @@ fn copy_dir(from: &Path, to: &Path, stats: &mut Copied, links: &mut HashMap<(u64
         if m.nlink() > 1 && !ft.is_dir() {
             if let Some(first) = links.get(&(m.dev(), m.ino())) {
                 wrap(fs::hard_link(first, &dst))?;
+                stats.files += 1;
                 continue;
             }
             links.insert((m.dev(), m.ino()), dst.clone());

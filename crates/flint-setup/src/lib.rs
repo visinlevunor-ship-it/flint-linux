@@ -4,5 +4,7 @@
 mod copy;
 pub mod efi;
 mod install;
+mod update;
 
 pub use install::main as install;
+pub use update::main as update;

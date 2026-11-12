@@ -137,6 +137,7 @@ dependencies = [
  "flint-core",
  "flint-dev",
  "flint-disk",
+ "flint-pkg",
  "libc",
 ]
 
