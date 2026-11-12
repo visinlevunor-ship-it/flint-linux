@@ -4,7 +4,7 @@ A small Linux distribution with a from-scratch userland written in Rust. Only th
 
 [![Support Flint on Patreon](https://img.shields.io/badge/Patreon-support%20Flint-f96854?logo=patreon&logoColor=white)](https://www.patreon.com/c/FlintLinux/membership)
 
-**Status: 0.7, early development.** Flint boots on real PCs and laptops from a USB stick with its own UEFI bootloader, loads the drivers for whatever hardware it finds, and gets on the network by itself: wired with DHCP, or Wi-Fi with WPA2. Packages install over HTTPS from signed repositories (`pkg install fastfetch`). Every program in the base system is Flint's own; busybox is gone. It runs from RAM as a live system; there is no installer yet.
+**Status: 0.8, early development.** Flint boots on real PCs and laptops from a USB stick with its own UEFI bootloader, loads the drivers for whatever hardware it finds (graphics included), and gets on the network by itself: wired with DHCP, or Wi-Fi with WPA2. The USB stick keeps everything you change; `flint-install` puts Flint on a disk, next to other systems or on its own, and `flint-update` keeps it current. Packages install over HTTPS from signed repositories: Flint's own (`pkg install neovim`), Arch Linux's converted, and other kernels (`pkg kernels install zen`). Every program in the base system is Flint's own.
 
 ## What works today
 
@@ -20,14 +20,17 @@ Every Flint program is one binary, `/bin/flint`, installed under normal names: `
 | `net`, `ping` | network status, `net wifi scan / connect / list / forget`; ping with Flint's own DNS resolver | tested in QEMU |
 | `login`, `su`, `passwd` | getty + login, privilege switching, password changes | tested in QEMU |
 | `sh` | the shell: POSIX-style scripting, pipelines, redirections, job control; line editor with history, Ctrl-R search and Tab completion | tested in QEMU and on a pty |
-| `pkg` | package manager: dependencies, upgrades, config-file protection, verify; HTTPS repositories with Ed25519-signed indexes | tested in QEMU |
+| `pkg` | package manager: dependencies, upgrades, config-file protection, verify; HTTPS repositories with Ed25519-signed indexes; gzip-compressed packages; kernels as packages | tested in QEMU |
+| `flint-install` | installs Flint on a disk: in free space next to other systems, or on the whole disk; adds a UEFI boot entry | tested in QEMU (OVMF, NVMe) |
+| `flint-update` | updates the base system (kernel, drivers, firmware, base image, bootloader) and every package | tested in QEMU |
+| `gzip`, `gunzip`, `zcat` | Flint's own DEFLATE | compared with GNU gzip |
 | `fetch` | downloads over HTTP and HTTPS (Flint's own TLS 1.3 client) | tested in QEMU and against GitHub |
 | `poweroff`, `reboot`, `halt` | ask init to shut down (or `-f` to do it directly) | tested in QEMU |
 | `ls cat grep sed awk find vi less ...` | core tools, including `grep`/`sed` with full regular expressions, `awk`, `vi` and `less` | tested in QEMU, compared with GNU grep/sed and mawk |
-| `flint-mkimage` | host tool: initramfs archives, driver and firmware selection, GPT + FAT32 disk images | unit tested, images checked with sgdisk and fsck.vfat |
+| `flint-mkimage` | host tool: initramfs archives, driver and firmware selection, GPT + FAT32 disk images, Arch Linux packages as Flint packages | unit tested, images checked with sgdisk, fsck.vfat and e2fsck |
 | `flint-rt`, `flint-version` | libc replacement for `no_std` programs, and the first program on it | tested in QEMU |
 
-Not written yet: an installer, WPA3-only and enterprise Wi-Fi.
+Not written yet: WPA3-only and enterprise Wi-Fi.
 
 ## Boot it on a PC
 
@@ -62,7 +65,26 @@ net                                # status
 ping example.org
 ```
 
-Saved networks are stored on the USB stick (`/boot/FLINT/NETWORKS`), so they are there after a reboot. The rest of the system runs in RAM: other changes are gone after a reboot.
+Saved networks are stored on the USB stick (`/boot/FLINT/NETWORKS`).
+
+On the first boot, Flint turns the free space of the USB stick into a data partition (ext4) and from then on keeps everything you change there: installed packages, your files, settings. The base system itself stays as it came (it is the lower layer of an overlay), so `flint-update` can replace it without touching your data. The boot menu entry "live" (`flint.persist=0`) starts without any of this and changes nothing on the stick.
+
+### Install on a disk
+
+```sh
+flint-install               # asks: which disk, free space or whole disk, copy your changes, default boot entry
+```
+
+In free space, Flint adds two partitions (boot and data) and leaves every existing one alone, so it sits next to FreeBSD or Windows; pick "Flint Linux" in the firmware boot menu (or let `--default` make it the first entry). On a whole disk, everything on it is erased after you type its name.
+
+### Keep it up to date
+
+```sh
+flint-update                # base system + every package; restart to use a new base
+pkg kernels                 # kernels: installed and available
+pkg kernels install zen     # also lts and upstream; each gets a boot menu entry
+pkg kernels default zen     # start it by default
+```
 
 Supported Wi-Fi security: open networks, WPA2-Personal, and WPA2/WPA3 mixed networks (joined with WPA2). Not supported yet: WPA3-only, WEP, old WPA1, enterprise (802.1X) networks, and networks that require management frame protection with WPA2.
 
@@ -118,7 +140,17 @@ pkg build SRC repo/x86_64/ && pkg index repo/x86_64/
 pkg sign repo/x86_64/ ~/keys/flint.key      # writes INDEX.sig; sign again after every index
 ```
 
-`ports/` holds recipes that build third-party programs (as static binaries) into package sources, e.g. `ports/fastfetch/build.sh OUT && pkg build OUT repo/x86_64/`.
+`ports/` holds recipes that build third-party programs as static binaries: fastfetch, neovim, tmux, git, curl, nano, micro, htop, btop and ca-certificates (`ports/NAME/build.sh OUT && pkg build OUT repo/x86_64/`; see `ports/README.md`).
+
+What else goes into the repository, from the build machine:
+
+```sh
+image/build-system-packages.sh repo/x86_64/            # the base system, for flint-update
+ports/kernels/build.sh zen /tmp/zen && pkg build /tmp/zen repo/x86_64/   # zen, lts, upstream
+flint-mkimage arch repo/x86_64/ htop ripgrep ...       # Arch Linux packages and all they need
+```
+
+`flint-mkimage arch` turns Arch Linux packages into Flint packages, with everything they depend on (glibc and Arch's libraries come along, so they run as on Arch). Install scripts and pacman hooks do not carry over, nor does anything that needs systemd; most terminal programs do not care. Each Arch package is checked against the SHA-256 in Arch's package list, downloaded over HTTPS by the host's curl or fetch.
 
 How it stays safe:
 
@@ -141,6 +173,7 @@ KERNEL=/path/to/bzImage tests/qemu/session.py   # full QEMU session over the ser
 - `cargo test` runs the unit tests plus integration tests that execute the real `flint` and `pkg` binaries. They include hostile packages, remote repositories over a local HTTP server (tampered index, rollback, swapped package, untrusted key), the cryptography test vectors from the standards (SHA-1, SHA-512, HMAC, PBKDF2, the 802.11 PRF, AES key wrap, AES-GCM, X25519, Ed25519, HKDF, the TLS 1.3 key schedule of RFC 8448), and a full WPA2 handshake against a simulated access point, including a wrong password.
 - `tests/pty/lineedit.py` and `tests/pty/jobcontrol.py` drive the interactive shell on a real pseudo-terminal.
 - `tests/qemu/session.py` boots the image and checks login, privilege dropping, `su`, `passwd`, the tools, shell job control, `pkg` and poweroff. QEMU without KVM is slow; set `SLOW=3` to stretch its timeouts.
+- For 0.8, in QEMU with OVMF: the first boot from a USB stick making its data partition, files surviving reboots (and e2fsck finding it clean after shutdown), `flint-install` in free space next to a FreeBSD-style layout (existing partitions byte-for-byte unchanged) and on a whole disk, booting the installed system from its UEFI boot entry, `pkg kernels install/default/remove` with a second kernel, `flint-update` replacing the base system, every port installed from an HTTPS repository and run, and glibc programs converted by `flint-mkimage arch` running on Flint. Arch's real mirrors were not reachable from the test machine: the converter was tested on packages in Arch's format.
 - For 0.7, `pkg install fastfetch` was tested in QEMU against an HTTPS repository, and `fetch` against GitHub.
 - For 0.6 the disk image was also booted under OVMF from NVMe, SATA, USB and virtio disks; wired networking was tested with e1000e and rtl8139 network cards; Wi-Fi with `mac80211_hwsim` against `hostapd` (WPA2, wrong password, group rekeys).
 
@@ -157,8 +190,11 @@ crates/flint-passwd    passwd (setuid)
 crates/flint-su        su (setuid)
 crates/flint-sh        shell
 crates/flint-pkg       package manager
+crates/flint-gzip      DEFLATE and gzip
+crates/flint-disk      GPT, FAT32 and ext4 formatting
+crates/flint-setup     flint-install, flint-update
 crates/flint-box       core tools
-crates/flint-dev       driver loading, mountboot
+crates/flint-dev       driver loading, mountboot, the persistent root
 crates/flint-net       netd, net, ping: DHCP, Wi-Fi (nl80211, WPA2)
 crates/flint-crypto    SHA-512, X25519, Ed25519, AES-GCM, HKDF (pure Rust)
 crates/flint-web       DNS, TLS 1.3 client, HTTP downloads, fetch
@@ -177,7 +213,8 @@ VERSION                the distro version
 - **Version.** `VERSION` holds `MAJOR.MINOR`. A rewrite of a component or any major architectural change bumps MAJOR; everything else bumps MINOR. `flint-version` prints it with the git hash. 1.0 is planned for when the userland no longer depends on musl.
 - **One binary.** `/bin/flint` holds every program and picks one by the name it was started as. Small on disk, one build, and nothing named `flint-*` to remember. It must never be setuid: it would run every program as root. `su` and `passwd` are separate for that reason.
 - **Booting.** `flint-boot` loads the kernel with the firmware's LoadImage/StartImage, so the kernel's EFI stub does the rest. The initramfs images are joined in memory and handed over through the LoadFile2 protocol that Linux looks for. The boot partition's GPT UUID goes on the command line as `flint.esp=`, which is how `mountboot` finds the right USB stick even with several plugged in.
-- **Drivers.** The kernel and modules are Ubuntu's (a well-tested build with drivers for nearly every PC). `flint-mkimage drivers` picks modules by path, follows their dependencies, and includes the firmware each one declares, choosing the newest version that exists; it generates `modules.dep` and `modules.alias` itself. Graphics uses the firmware framebuffer (`simpledrm`), so a GPU driver without its firmware can never leave a black screen.
+- **Drivers.** The kernel and modules are Ubuntu's (a well-tested build with drivers for nearly every PC). `flint-mkimage drivers` picks modules by path, follows their dependencies, and includes the firmware each one declares, choosing the newest version that exists; it generates `modules.dep` and `modules.alias` itself. AMD and Intel graphics drivers come with their firmware (in `GPU.IMG`); NVIDIA's nouveau is left out, because without its large GSP firmware it would blank the screen, so NVIDIA cards keep the firmware framebuffer (`simpledrm`).
+- **Disks.** The boot partition is FAT32 (the bootloader, kernel and images), the data partition ext4, both formatted by Flint's own code (`flint-disk`). At boot, init mounts the data partition and switches to an overlay: the base system from RAM below, the data partition above. Shutdown remounts the data partition read-only, so it is always clean.
 - **Networking.** All Flint's own code: netlink, a DHCP client on a packet socket, a DNS resolver, nl80211 for Wi-Fi, and the WPA2 4-way and group key handshakes with SHA-1, PBKDF2 and AES key unwrap. The kernel (or the Wi-Fi card) does the frame encryption. Wired links get a lower route metric than Wi-Fi, so a cable wins when both are up.
 - **Own libc, in stages.** The std crates currently link musl statically. `flint-rt` is the replacement: raw syscalls, `_start`, a heap, `mem*`, panics. It is not a C library, so it does not run C programs; it exists for Flint's own Rust programs.
 - **Passwords.** PBKDF2-HMAC-SHA256, 100,000 iterations, 16 random salt bytes, stored as `$flint1$<iterations>$<salt hex>$<hash hex>` in `/etc/shadow` (mode 0600). A field that is empty or starts with `!` or `*` is a locked account.
@@ -187,9 +224,10 @@ VERSION                the distro version
 ## Known limitations
 
 - x86-64 with UEFI only; Secure Boot must be off. Tested in QEMU, not yet on a range of real machines: reports are welcome.
-- It is a live system: everything except saved Wi-Fi networks is lost on reboot. No installer yet.
 - **Wi-Fi:** one network at a time, no WPA3-only or enterprise networks, no IPv6 address configuration yet (IPv6 works on links where the kernel configures it itself).
-- **pkg** does not compress packages yet. The base system itself is not packaged. Third-party programs are static binaries for now (no shared libraries on the system).
+- **pkg** downloads one package at a time, and Flint's TLS does AES in software (not with the CPU's AES instructions), so large downloads are slower than they could be.
+- Arch kernels (`zen`, `lts`, `upstream`) and the Arch package converter were only tested with stand-ins, not with Arch's own files.
+- NVIDIA graphics: firmware framebuffer only.
 - **sh** does not support `trap`, aliases, `set -e`/`-u`/`-x`, arrays, `[[ ]]`, process substitution, `${x/a/b}`.
 - The image ships a known password. Change it with `passwd` before connecting to networks you do not trust.
 - `cargo test` does not run on non-Linux hosts.
