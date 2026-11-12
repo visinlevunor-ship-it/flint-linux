@@ -172,9 +172,11 @@ impl Supervisor {
             flint_info!("{} {how}", slot.svc.name);
         } else if slot.fast_fails > 0 {
             flint_warn!("{} {how} after a short run; restarting in {:?}", slot.svc.name, backoff(slot.fast_fails));
-        } else {
+        } else if !(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0) {
             flint_info!("{} {how}; restarting", slot.svc.name);
         }
+        // A clean exit after a normal run (someone logged out) is routine: the console is
+        // the screen people are working on, so it stays quiet.
     }
 }
 

@@ -10,6 +10,7 @@ use std::io::{self, Read, Write};
 use std::os::unix::process::CommandExt;
 use std::process::{Command};
 use std::thread;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use flint_auth::files::{groups_of, parse_group, User};
@@ -17,7 +18,9 @@ use flint_auth::login::authenticate;
 use flint_core::version;
 
 const MAX_ATTEMPTS: u32 = 3;
-const PROMPT_TIMEOUT_SECS: u32 = 120;
+/// How long the password prompt waits. The user-name prompt waits forever: a login on a
+/// console nobody is looking at must stay quiet, not restart every few minutes.
+const PASSWORD_TIMEOUT_SECS: u32 = 60;
 const FAIL_DELAY: Duration = Duration::from_secs(2);
 const MAX_LINE: usize = 256;
 
@@ -33,6 +36,7 @@ pub fn main(_args: Vec<String>) -> i32 {
     }
 
     set_sane_tty();
+    catch_alarm();
     banner();
 
     let hostname = hostname();
@@ -130,6 +134,25 @@ impl Drop for EchoOff {
     }
 }
 
+static TIMED_OUT: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn on_alarm(_: libc::c_int) {
+    TIMED_OUT.store(true, Ordering::SeqCst);
+}
+
+/// A timed-out prompt ends login normally (init starts a fresh one) instead of SIGALRM
+/// killing it, which init would report as a crash on the console.
+fn catch_alarm() {
+    // SAFETY: installing a handler that only stores to an atomic; no SA_RESTART, so a
+    // blocked read() returns EINTR when the alarm fires.
+    unsafe {
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = on_alarm as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        libc::sigemptyset(&mut sa.sa_mask);
+        libc::sigaction(libc::SIGALRM, &sa, std::ptr::null_mut());
+    }
+}
+
 /// Show `prompt`, read one line (without the newline). `None` on EOF, error or timeout.
 fn prompt_line(prompt: &str, echo: bool) -> Option<String> {
     // Echo goes off *before* the prompt is shown: tcsetattr(TCSAFLUSH) discards pending
@@ -138,8 +161,9 @@ fn prompt_line(prompt: &str, echo: bool) -> Option<String> {
     print!("{prompt}");
     let _ = io::stdout().flush();
 
-    // SAFETY: SIGALRM's default action ends this process; init then respawns login.
-    unsafe { libc::alarm(PROMPT_TIMEOUT_SECS) };
+    TIMED_OUT.store(false, Ordering::SeqCst);
+    // SAFETY: arming a timer; its SIGALRM interrupts read() (see `catch_alarm`).
+    unsafe { libc::alarm(if echo { 0 } else { PASSWORD_TIMEOUT_SECS }) };
     let line = read_line();
     // SAFETY: cancelling the timer.
     unsafe { libc::alarm(0) };
@@ -166,7 +190,7 @@ fn read_line() -> Option<String> {
                     line.push(byte[0]);
                 }
             }
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) if e.kind() == io::ErrorKind::Interrupted && !TIMED_OUT.load(Ordering::SeqCst) => {}
             Err(_) => return None,
         }
     }
