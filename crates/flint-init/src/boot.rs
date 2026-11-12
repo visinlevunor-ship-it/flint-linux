@@ -137,6 +137,15 @@ fn set_hostname() {
 pub fn run_tasks(tasks: &[Vec<String>]) {
     for argv in tasks {
         let name = argv.join(" ");
+        if name == "@persist" {
+            // Built in: only PID 1 can change its own root.
+            match flint_dev::persist::setup() {
+                Ok(Some(dev)) => flint_info!("files and settings are kept on {dev}"),
+                Ok(None) => flint_info!("live session: changes are not kept after a reboot"),
+                Err(e) => flint_warn!("{e}; changes are not kept after a reboot"),
+            }
+            continue;
+        }
         let mut child = match spawn::command(argv, None).and_then(|mut c| c.spawn()) {
             Ok(c) => c,
             Err(e) => {

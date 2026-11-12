@@ -11,3 +11,4 @@ path = "src/main.rs"
 
 [dependencies]
 flint-auth = { path = "../flint-auth" }
+flint-disk = { path = "../flint-disk" }

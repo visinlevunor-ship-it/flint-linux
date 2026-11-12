@@ -24,6 +24,13 @@ pub fn run(action: PowerAction) -> ! {
     }
 
     sys::sync();
+    // With a persistent root, "/" is an overlay whose writable layer is the data partition:
+    // make it read-only first, or the data partition cannot be made read-only below.
+    if let Err(e) = sys::remount("/", libc::MS_RDONLY) {
+        if e.raw_os_error() != Some(libc::EINVAL) {
+            flint_warn!("cannot remount / read-only: {e}");
+        }
+    }
     unmount_all();
     match sys::remount("/", libc::MS_RDONLY) {
         Ok(()) => {}
@@ -79,6 +86,13 @@ fn unmount_all() {
     for m in mounts.iter().rev() {
         if KEEP.contains(&m.target.as_str()) {
             continue;
+        }
+        // Read-only first: unmounting the data partition only detaches it while the root
+        // overlay still uses it, so the remount is what actually closes it cleanly.
+        if m.device.starts_with("/dev/") {
+            if let Err(e) = sys::remount(&m.target, libc::MS_RDONLY) {
+                flint_warn!("cannot remount {} read-only: {e}", m.target);
+            }
         }
         if let Err(e) = sys::umount(&m.target) {
             flint_warn!("cannot unmount {}: {e}; remounting read-only instead", m.target);

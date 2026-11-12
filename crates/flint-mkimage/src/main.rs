@@ -18,7 +18,7 @@ usage: flint-mkimage cpio DIR OUTPUT
          generate modules.dep/alias/softdep, write both as cpio archives
        flint-mkimage disk OUTPUT SIZE_MIB DIR [LABEL]
          a GPT disk image with one EFI system partition (FAT32, label FLINT by default)
-         holding DIR; every name in DIR must be an upper-case 8.3 name";
+         holding DIR (long file names are fine)";
 
 fn run(args: &[String]) -> Result<(), String> {
     match args.first().map(String::as_str) {
@@ -32,6 +32,9 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         Some("drivers") => {
             let [_, conf, kroot, fw, mods_out, fw_out] = args else { return Err(USAGE.into()) };
+            // Walk the real directories, even if the paths given are symlinks to them.
+            let real = |p: &String| fs::canonicalize(p).map(|r| r.to_string_lossy().into_owned()).map_err(|e| format!("{p}: {e}"));
+            let (kroot, fw) = (&real(kroot)?, &real(fw)?);
             let text = fs::read_to_string(conf).map_err(|e| format!("{conf}: {e}"))?;
             let cfg = drivers::Config::parse(&text).map_err(|e| format!("{conf}: {e}"))?;
             let (version, moddir) = drivers::find_module_dir(Path::new(kroot))?;
@@ -73,9 +76,15 @@ fn hash_tree(h: &mut flint_auth::sha256::Sha256, tree: &[(String, disk::Node)]) 
     for (name, node) in tree {
         h.update(name.as_bytes());
         match node {
-            disk::Node::File(d) => {
+            disk::Node::File(flint_disk::fat::Data::Bytes(d)) => {
                 h.update(&(d.len() as u64).to_le_bytes());
                 h.update(d);
+            }
+            disk::Node::File(flint_disk::fat::Data::File(p, len)) => {
+                h.update(&len.to_le_bytes());
+                if let Ok(d) = std::fs::read(p) {
+                    h.update(&d);
+                }
             }
             disk::Node::Dir(c) => {
                 h.update(b"/");

@@ -51,8 +51,13 @@ name = "flint-dev"
 version = "0.1.0"
 dependencies = [
  "flint-core",
+ "flint-disk",
  "libc",
 ]
+
+[[package]]
+name = "flint-disk"
+version = "0.1.0"
 
 [[package]]
 name = "flint-gzip"
@@ -63,6 +68,7 @@ name = "flint-init"
 version = "0.1.0"
 dependencies = [
  "flint-core",
+ "flint-dev",
  "libc",
 ]
 
@@ -80,6 +86,7 @@ name = "flint-mkimage"
 version = "0.1.0"
 dependencies = [
  "flint-auth",
+ "flint-disk",
 ]
 
 [[package]]

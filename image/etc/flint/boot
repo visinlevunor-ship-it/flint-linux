@@ -5,5 +5,8 @@
 /sbin/modload --coldplug --wait 10
 # The partition Flint booted from, at /boot: saved settings live there.
 /sbin/mountboot --wait 15
+# Keep changes across reboots on the data partition of the boot disk (made on first boot
+# from a USB stick); built into init. Boot with flint.persist=0 to skip it.
+@persist
 /bin/mkdir -p /home/flint
 /bin/chown 1000:1000 /home/flint

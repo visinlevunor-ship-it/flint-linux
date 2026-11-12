@@ -5,6 +5,7 @@ pub mod bootpart;
 pub mod index;
 pub mod loader;
 pub mod pattern;
+pub mod persist;
 pub mod uevent;
 
 use std::fs;

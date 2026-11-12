@@ -1,0 +1,8 @@
+[package]
+name = "flint-disk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Disks for Flint: GPT partition tables, FAT32 and ext4 formatting. Pure Rust, std only."
+
+[dependencies]

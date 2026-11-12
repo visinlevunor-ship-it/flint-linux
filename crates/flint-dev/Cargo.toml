@@ -7,4 +7,5 @@ description = "Hardware support: modload (driver autoloading), devd (hotplug), l
 
 [dependencies]
 flint-core.workspace = true
+flint-disk = { path = "../flint-disk" }
 libc.workspace = true
