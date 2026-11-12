@@ -1,5 +1,5 @@
 name: fastfetch
-version: 2.71.0
+version: 2.71.0-1
 description: Shows system information next to a logo
 arch: x86_64
 config: etc/xdg/fastfetch/config.jsonc
