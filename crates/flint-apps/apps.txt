@@ -21,6 +21,8 @@ bin fetch
 bin find
 bin free
 bin grep
+bin gunzip
+bin gzip
 sbin halt
 bin head
 bin hostname
@@ -71,3 +73,4 @@ bin wc
 bin which
 bin whoami
 bin xargs
+bin zcat

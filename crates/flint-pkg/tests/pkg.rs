@@ -513,3 +513,26 @@ fn remote_repository_signed_index_and_downloads() {
     run(&["sign", &e.s("repo"), &keys.join("evil.key").to_string_lossy()]).ok();
     r(&["update"]).fails("not trusted");
 }
+
+#[test]
+fn packages_are_gzip_and_old_uncompressed_ones_still_install() {
+    let e = Env::new();
+    e.publish("lib", "name: libgreet\nversion: 1.0\n", &[("usr/lib/libgreet.txt", &"compressible text\n".repeat(500), 0o644)]);
+    let built = fs::read(e.p("repo/libgreet-1.0.fpk")).unwrap();
+    assert_eq!(&built[..2], &[0x1f, 0x8b], "built packages are gzip-compressed");
+    assert!(built.len() < 4000, "and actually smaller: {}", built.len());
+
+    // a plain tar package (what pkg 0.7 built) is still accepted
+    fs::create_dir_all(e.p("src")).unwrap();
+    hostile(&e.p("src/old-1.fpk"), "name: old\nversion: 1\n", &[Ent::Dir("usr"), Ent::Dir("usr/share"), Ent::File("usr/share/old.txt", b"from 0.7\n")], false);
+    install_file(&e, "src/old-1.fpk").ok();
+    assert_eq!(read(&e.root("usr/share/old.txt")), "from 0.7\n");
+
+    // damage inside the compressed data is caught before anything is installed
+    let mut bad = built.clone();
+    let n = bad.len();
+    bad[n / 2] ^= 0xff;
+    fs::write(e.p("src/libgreet-1.0.fpk"), bad).unwrap();
+    install_file(&e, "src/libgreet-1.0.fpk").fails("libgreet-1.0.fpk");
+    assert!(!e.root("usr/lib/libgreet.txt").exists());
+}

@@ -167,7 +167,7 @@ pub fn install_step(ctx: &Ctx, step: &Step, old: Option<&Installed>, notes: &mut
     };
 
     // 2. Read and check the whole archive before touching the system.
-    let file = fs::File::open(&pkg_path).map_err(|e| io(e, &pkg_path))?;
+    let file = crate::pack::open_archive(&pkg_path).map_err(|e| io(e, &pkg_path))?;
     let mut reader = Reader::new(file);
     let bad = |m: String| format!("{}: {m}", pkg_path.display());
     let first = reader.next_entry().map_err(|e| bad(e.to_string()))?.ok_or_else(|| bad("empty archive".into()))?;

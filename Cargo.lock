@@ -28,6 +28,7 @@ version = "0.1.0"
 dependencies = [
  "flint-auth",
  "flint-core",
+ "flint-gzip",
  "libc",
 ]
 
@@ -52,6 +53,10 @@ dependencies = [
  "flint-core",
  "libc",
 ]
+
+[[package]]
+name = "flint-gzip"
+version = "0.1.0"
 
 [[package]]
 name = "flint-init"
@@ -103,6 +108,7 @@ dependencies = [
  "flint-auth",
  "flint-core",
  "flint-crypto",
+ "flint-gzip",
  "flint-web",
  "libc",
 ]

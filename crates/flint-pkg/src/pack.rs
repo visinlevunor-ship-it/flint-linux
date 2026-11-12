@@ -1,7 +1,7 @@
 //! Building `.fpk` packages and repository indexes.
 
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Seek};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -110,7 +110,12 @@ pub fn build(src: &Path, out_dir: &Path) -> Result<(PathBuf, String, u64), Strin
         }
         w.finish().map_err(err)?;
         Ok(())
-    })();
+    })()
+    .and_then(|()| {
+        // Packages are gzip-compressed tar archives (readers also take plain tar).
+        let tar = fs::read(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
+        fs::write(&tmp, flint_gzip::compress(&tar, flint_gzip::Level::DEFAULT)).map_err(|e| format!("{}: {e}", tmp.display()))
+    });
     if let Err(e) = result {
         let _ = fs::remove_file(&tmp);
         return Err(e);
@@ -120,9 +125,50 @@ pub fn build(src: &Path, out_dir: &Path) -> Result<(PathBuf, String, u64), Strin
     Ok((out, sha, size))
 }
 
+/// A package's tar archive: the file itself (old, uncompressed packages) or the
+/// decompressed contents of a gzip-compressed one.
+pub enum Archive {
+    File(fs::File),
+    Memory(io::Cursor<Vec<u8>>),
+}
+
+impl io::Read for Archive {
+    fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Archive::File(f) => f.read(b),
+            Archive::Memory(c) => c.read(b),
+        }
+    }
+}
+
+impl io::Seek for Archive {
+    fn seek(&mut self, p: io::SeekFrom) -> io::Result<u64> {
+        match self {
+            Archive::File(f) => f.seek(p),
+            Archive::Memory(c) => c.seek(p),
+        }
+    }
+}
+
+/// Largest package contents pkg will unpack into memory.
+const MAX_UNPACKED: usize = 8 << 30;
+
+pub fn open_archive(fpk: &Path) -> io::Result<Archive> {
+    let mut f = fs::File::open(fpk)?;
+    let mut magic = [0u8; 3];
+    let n = f.read(&mut magic)?;
+    if n == 3 && flint_gzip::is_gzip(&magic) {
+        let data = fs::read(fpk)?;
+        let tar = flint_gzip::decompress(&data, MAX_UNPACKED).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        return Ok(Archive::Memory(io::Cursor::new(tar)));
+    }
+    f.seek(io::SeekFrom::Start(0))?;
+    Ok(Archive::File(f))
+}
+
 /// The control data stored in a package (its first entry).
 pub fn read_control(fpk: &Path) -> Result<Control, String> {
-    let f = fs::File::open(fpk).map_err(|e| format!("{}: {e}", fpk.display()))?;
+    let f = open_archive(fpk).map_err(|e| format!("{}: {e}", fpk.display()))?;
     let mut r = Reader::new(f);
     let e = r.next_entry().map_err(|e| format!("{}: {e}", fpk.display()))?.ok_or_else(|| format!("{}: empty archive", fpk.display()))?;
     if e.header.name != CONTROL_NAME || e.header.kind != Kind::File {

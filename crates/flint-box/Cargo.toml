@@ -8,4 +8,5 @@ description = "Flint's core tools (ls, cat, cp, mount, ...), run through the fli
 [dependencies]
 flint-auth = { path = "../flint-auth" }
 flint-core.workspace = true
+flint-gzip = { path = "../flint-gzip" }
 libc.workspace = true

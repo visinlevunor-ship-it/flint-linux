@@ -11,6 +11,7 @@ flint-core = { path = "../flint-core", default-features = false }
 flint-auth = { path = "../flint-auth" }
 flint-crypto = { path = "../flint-crypto" }
 flint-web = { path = "../flint-web" }
+flint-gzip = { path = "../flint-gzip" }
 libc.workspace = true
 
 [[bin]]

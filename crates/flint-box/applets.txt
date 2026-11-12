@@ -17,6 +17,8 @@ false
 find
 free
 grep
+gunzip
+gzip
 head
 hostname
 id
@@ -52,3 +54,4 @@ wc
 which
 whoami
 xargs
+zcat

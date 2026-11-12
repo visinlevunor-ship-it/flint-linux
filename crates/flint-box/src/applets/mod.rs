@@ -4,6 +4,7 @@
 mod awk;
 mod basic;
 mod files;
+mod gzip;
 mod ls;
 mod more;
 mod pager;
@@ -34,6 +35,8 @@ pub const TABLE: &[(&str, Applet)] = &[
     ("find", more::find),
     ("free", more::free),
     ("grep", text::grep),
+    ("gunzip", gzip::gunzip),
+    ("gzip", gzip::gzip),
     ("head", files::head),
     ("hostname", basic::hostname),
     ("id", basic::id),
@@ -69,6 +72,7 @@ pub const TABLE: &[(&str, Applet)] = &[
     ("which", more::which),
     ("whoami", basic::whoami),
     ("xargs", text::xargs),
+    ("zcat", gzip::zcat),
 ];
 
 pub fn find(name: &str) -> Option<Applet> {
