@@ -19,6 +19,7 @@ bin env
 bin false
 bin fetch
 bin find
+sbin flint-install
 bin free
 bin grep
 bin gunzip

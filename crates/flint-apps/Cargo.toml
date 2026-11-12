@@ -19,4 +19,5 @@ flint-web = { path = "../flint-web" }
 flint-login = { path = "../flint-login" }
 flint-pkg = { path = "../flint-pkg" }
 flint-power = { path = "../flint-power" }
+flint-setup = { path = "../flint-setup" }
 flint-sh = { path = "../flint-sh" }

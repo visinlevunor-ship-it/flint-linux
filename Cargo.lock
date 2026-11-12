@@ -14,6 +14,7 @@ dependencies = [
  "flint-net",
  "flint-pkg",
  "flint-power",
+ "flint-setup",
  "flint-sh",
  "flint-web",
 ]
@@ -125,6 +126,16 @@ name = "flint-power"
 version = "0.1.0"
 dependencies = [
  "flint-core",
+ "libc",
+]
+
+[[package]]
+name = "flint-setup"
+version = "0.1.0"
+dependencies = [
+ "flint-core",
+ "flint-dev",
+ "flint-disk",
  "libc",
 ]
 

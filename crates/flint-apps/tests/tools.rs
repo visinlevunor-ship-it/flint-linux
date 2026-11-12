@@ -80,7 +80,8 @@ fn list_has_every_tool_and_program() {
     for prog in ["sh", "pkg", "init", "login", "poweroff", "reboot", "halt"] {
         assert!(listed.contains(&prog), "{prog} missing from flint --list");
     }
-    assert!(!listed.iter().any(|n| n.starts_with("flint")), "no flint-* names: {listed:?}");
+    // Build-machine tools (flint-mkimage) are separate; only these flint-* programs belong.
+    assert!(!listed.iter().any(|n| n.starts_with("flint") && !matches!(*n, "flint-install" | "flint-update")), "no other flint-* names: {listed:?}");
 }
 
 #[test]

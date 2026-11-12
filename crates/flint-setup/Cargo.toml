@@ -1,0 +1,12 @@
+[package]
+name = "flint-setup"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Setting up and keeping Flint current: flint-install and flint-update"
+
+[dependencies]
+flint-core.workspace = true
+flint-dev = { path = "../flint-dev" }
+flint-disk = { path = "../flint-disk" }
+libc.workspace = true

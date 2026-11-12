@@ -17,6 +17,7 @@ members = [
     "crates/flint-net",
     "crates/flint-passwd",
     "crates/flint-pkg",
+    "crates/flint-setup",
     "crates/flint-sh",
     "crates/flint-web",
     "crates/flint-su",
