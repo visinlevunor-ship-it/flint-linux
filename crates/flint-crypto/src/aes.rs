@@ -1,5 +1,7 @@
 //! AES-128 (FIPS 197) and AES key wrap (RFC 3394).
-
+//!
+//! Encryption uses the CPU's AES instructions (AES-NI) when it has them, checked once per
+//! key; the table-free software rounds are the fallback.
 
 const SBOX: [u8; 256] = {
     // Generated from the multiplicative inverse in GF(2^8) and the affine map, at compile time.
@@ -54,6 +56,58 @@ fn mul(mut a: u8, mut b: u8) -> u8 {
 
 pub struct Aes128 {
     rk: [[u8; 16]; 11],
+    hw: bool,
+}
+
+/// Whether this CPU has the AES instructions (always false off x86-64).
+pub fn has_aes_ni() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        std::arch::is_x86_feature_detected!("aes") && std::arch::is_x86_feature_detected!("sse2")
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+mod ni {
+    use std::arch::x86_64::*;
+
+    /// Encrypt each block with the expanded key, eight at a time so the AES unit stays busy.
+    ///
+    /// # Safety
+    /// The CPU must support AES-NI (checked by the caller).
+    #[target_feature(enable = "aes,sse2")]
+    pub unsafe fn encrypt(rk: &[[u8; 16]; 11], blocks: &mut [[u8; 16]]) {
+        let mut k = [_mm_setzero_si128(); 11];
+        for (d, s) in k.iter_mut().zip(rk) {
+            *d = _mm_loadu_si128(s.as_ptr().cast());
+        }
+        let mut chunks = blocks.chunks_exact_mut(8);
+        for c in &mut chunks {
+            let mut x = [_mm_setzero_si128(); 8];
+            for i in 0..8 {
+                x[i] = _mm_xor_si128(_mm_loadu_si128(c[i].as_ptr().cast()), k[0]);
+            }
+            for rk in &k[1..10] {
+                for v in x.iter_mut() {
+                    *v = _mm_aesenc_si128(*v, *rk);
+                }
+            }
+            for i in 0..8 {
+                _mm_storeu_si128(c[i].as_mut_ptr().cast(), _mm_aesenclast_si128(x[i], k[10]));
+            }
+        }
+        for b in chunks.into_remainder() {
+            let mut v = _mm_xor_si128(_mm_loadu_si128(b.as_ptr().cast()), k[0]);
+            for rk in &k[1..10] {
+                v = _mm_aesenc_si128(v, *rk);
+            }
+            _mm_storeu_si128(b.as_mut_ptr().cast(), _mm_aesenclast_si128(v, k[10]));
+        }
+    }
 }
 
 impl Aes128 {
@@ -79,7 +133,12 @@ impl Aes128 {
                 rk[r][c * 4..c * 4 + 4].copy_from_slice(&w[r * 4 + c]);
             }
         }
-        Aes128 { rk }
+        Aes128 { rk, hw: has_aes_ni() }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn disable_hw(&mut self) {
+        self.hw = false;
     }
 
     fn add(s: &mut [u8; 16], k: &[u8; 16]) {
@@ -89,6 +148,23 @@ impl Aes128 {
     }
 
     pub fn encrypt(&self, b: &mut [u8; 16]) {
+        self.encrypt_blocks(core::slice::from_mut(b));
+    }
+
+    /// Encrypt several independent blocks (ECB; CTR mode builds on it).
+    pub fn encrypt_blocks(&self, blocks: &mut [[u8; 16]]) {
+        #[cfg(target_arch = "x86_64")]
+        if self.hw {
+            // SAFETY: hw is only set when the CPU has AES-NI.
+            unsafe { ni::encrypt(&self.rk, blocks) };
+            return;
+        }
+        for b in blocks {
+            self.encrypt_soft(b);
+        }
+    }
+
+    fn encrypt_soft(&self, b: &mut [u8; 16]) {
         Self::add(b, &self.rk[0]);
         for r in 1..11 {
             for x in b.iter_mut() {
@@ -105,7 +181,8 @@ impl Aes128 {
                 for c in 0..4 {
                     let col = [b[c * 4], b[c * 4 + 1], b[c * 4 + 2], b[c * 4 + 3]];
                     for row in 0..4 {
-                        b[c * 4 + row] = mul(col[row], 2) ^ mul(col[(row + 1) % 4], 3) ^ col[(row + 2) % 4] ^ col[(row + 3) % 4];
+                        let (a, n) = (col[row], col[(row + 1) % 4]);
+                        b[c * 4 + row] = xtime(a) ^ xtime(n) ^ n ^ col[(row + 2) % 4] ^ col[(row + 3) % 4];
                     }
                 }
             }
@@ -205,5 +282,17 @@ mod tests {
         let plain = unhex("00112233445566778899aabbccddeeff").unwrap();
         assert_eq!(aes_unwrap(&key, &wrapped).unwrap(), plain);
         assert_eq!(aes_wrap(&key, &plain), wrapped);
+    }
+
+    #[test]
+    fn hardware_matches_software() {
+        let key: [u8; 16] = core::array::from_fn(|i| (i as u8).wrapping_mul(37) ^ 0x5a);
+        let mut hw = Aes128::new(&key);
+        let mut blocks: Vec<[u8; 16]> = (0..21u8).map(|n| core::array::from_fn(|i| n.wrapping_mul(13) ^ i as u8)).collect();
+        let mut soft = blocks.clone();
+        hw.encrypt_blocks(&mut blocks);
+        hw.hw = false;
+        hw.encrypt_blocks(&mut soft);
+        assert_eq!(blocks, soft);
     }
 }

@@ -1,10 +1,82 @@
 //! AES-128-GCM (NIST SP 800-38D), the cipher TLS 1.3 servers must support.
+//!
+//! With AES-NI and PCLMULQDQ (every x86-64 CPU of the last decade) the counter blocks are
+//! encrypted eight at a time and GHASH is a carry-less multiply; otherwise both run in
+//! software.
 
 use crate::aes::Aes128;
 
 pub struct Gcm {
     aes: Aes128,
     h: u128,
+    clmul: bool,
+}
+
+#[cfg(target_arch = "x86_64")]
+mod clmul {
+    use std::arch::x86_64::*;
+
+    /// GF(2^128) multiply in GCM's bit order (Gueron & Kounavis, Intel white paper
+    /// "Carry-Less Multiplication and Its Usage for Computing the GCM Mode", algorithm 5).
+    /// Inputs and output are byte-reversed blocks, which is what a u128 read big-endian
+    /// looks like in a little-endian register.
+    ///
+    /// # Safety
+    /// The CPU must support PCLMULQDQ (checked by the caller).
+    #[target_feature(enable = "pclmulqdq,sse2")]
+    pub unsafe fn mul(a: u128, b: u128) -> u128 {
+        let a: __m128i = core::mem::transmute(a);
+        let b: __m128i = core::mem::transmute(b);
+        let mut t3 = _mm_clmulepi64_si128(a, b, 0x00);
+        let mut t4 = _mm_clmulepi64_si128(a, b, 0x10);
+        let mut t5 = _mm_clmulepi64_si128(a, b, 0x01);
+        let mut t6 = _mm_clmulepi64_si128(a, b, 0x11);
+        t4 = _mm_xor_si128(t4, t5);
+        t5 = _mm_slli_si128(t4, 8);
+        t4 = _mm_srli_si128(t4, 8);
+        t3 = _mm_xor_si128(t3, t5);
+        t6 = _mm_xor_si128(t6, t4);
+        // shift the 256-bit product left by one (the bit order is reflected)
+        let mut t7 = _mm_srli_epi32(t3, 31);
+        let mut t8 = _mm_srli_epi32(t6, 31);
+        t3 = _mm_slli_epi32(t3, 1);
+        t6 = _mm_slli_epi32(t6, 1);
+        let mut t9 = _mm_srli_si128(t7, 12);
+        t8 = _mm_slli_si128(t8, 4);
+        t7 = _mm_slli_si128(t7, 4);
+        t3 = _mm_or_si128(t3, t7);
+        t6 = _mm_or_si128(t6, t8);
+        t6 = _mm_or_si128(t6, t9);
+        // reduce modulo x^128 + x^7 + x^2 + x + 1
+        t7 = _mm_slli_epi32(t3, 31);
+        t8 = _mm_slli_epi32(t3, 30);
+        t9 = _mm_slli_epi32(t3, 25);
+        t7 = _mm_xor_si128(t7, t8);
+        t7 = _mm_xor_si128(t7, t9);
+        t8 = _mm_srli_si128(t7, 4);
+        t7 = _mm_slli_si128(t7, 12);
+        t3 = _mm_xor_si128(t3, t7);
+        let mut t2 = _mm_srli_epi32(t3, 1);
+        t4 = _mm_srli_epi32(t3, 2);
+        t5 = _mm_srli_epi32(t3, 7);
+        t2 = _mm_xor_si128(t2, t4);
+        t2 = _mm_xor_si128(t2, t5);
+        t2 = _mm_xor_si128(t2, t8);
+        t3 = _mm_xor_si128(t3, t2);
+        t6 = _mm_xor_si128(t6, t3);
+        core::mem::transmute(t6)
+    }
+}
+
+fn has_clmul() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        std::arch::is_x86_feature_detected!("pclmulqdq") && std::arch::is_x86_feature_detected!("sse2")
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
 }
 
 fn gf_mul(x: u128, y: u128) -> u128 {
@@ -32,32 +104,46 @@ impl Gcm {
         let aes = Aes128::new(key);
         let mut h = [0u8; 16];
         aes.encrypt(&mut h);
-        Gcm { aes, h: u128::from_be_bytes(h) }
+        Gcm { aes, h: u128::from_be_bytes(h), clmul: has_clmul() }
+    }
+
+    fn mul_h(&self, x: u128) -> u128 {
+        #[cfg(target_arch = "x86_64")]
+        if self.clmul {
+            // SAFETY: clmul is only set when the CPU has PCLMULQDQ.
+            return unsafe { clmul::mul(x, self.h) };
+        }
+        gf_mul(x, self.h)
     }
 
     fn ghash(&self, aad: &[u8], ct: &[u8]) -> u128 {
         let mut y = 0u128;
         for c in aad.chunks(16) {
-            y = gf_mul(y ^ block(c), self.h);
+            y = self.mul_h(y ^ block(c));
         }
         for c in ct.chunks(16) {
-            y = gf_mul(y ^ block(c), self.h);
+            y = self.mul_h(y ^ block(c));
         }
         let lens = ((aad.len() as u128 * 8) << 64) | (ct.len() as u128 * 8);
-        gf_mul(y ^ lens, self.h)
+        self.mul_h(y ^ lens)
     }
 
     fn ctr(&self, nonce: &[u8; 12], data: &mut [u8]) {
+        // 512 bytes of key stream at a time: eight-block batches, no allocation.
+        const N: usize = 32;
         let mut counter = 2u32;
-        for chunk in data.chunks_mut(16) {
-            let mut ks = [0u8; 16];
-            ks[..12].copy_from_slice(nonce);
-            ks[12..].copy_from_slice(&counter.to_be_bytes());
-            self.aes.encrypt(&mut ks);
-            for (d, k) in chunk.iter_mut().zip(ks) {
+        let mut ks = [[0u8; 16]; N];
+        for chunk in data.chunks_mut(16 * N) {
+            let n = chunk.len().div_ceil(16);
+            for b in &mut ks[..n] {
+                b[..12].copy_from_slice(nonce);
+                b[12..].copy_from_slice(&counter.to_be_bytes());
+                counter = counter.wrapping_add(1);
+            }
+            self.aes.encrypt_blocks(&mut ks[..n]);
+            for (d, k) in chunk.iter_mut().zip(ks.iter().flatten()) {
                 *d ^= k;
             }
-            counter = counter.wrapping_add(1);
         }
     }
 
@@ -112,5 +198,34 @@ mod tests {
         let mut bad = pt.clone();
         g.seal(&iv, &aad, &mut bad);
         assert!(!g.open(&iv, b"other", &mut bad, &tag));
+    }
+
+    #[test]
+    fn clmul_matches_software() {
+        if !has_clmul() {
+            return;
+        }
+        let mut x = 0x0123_4567_89ab_cdef_fedc_ba98_7654_3210u128;
+        for i in 0..200u32 {
+            let y = x.rotate_left(i % 128) ^ (i as u128 * 0x9e37_79b9_7f4a_7c15);
+            // SAFETY: checked above.
+            assert_eq!(unsafe { clmul::mul(x, y) }, gf_mul(x, y), "round {i}");
+            x = gf_mul(x, y) ^ 1;
+        }
+        // a long message through both paths
+        let key = [7u8; 16];
+        let mut fast = Gcm::new(&key);
+        let mut a: Vec<u8> = (0..5000u32).map(|i| (i * 31) as u8).collect();
+        let mut b = a.clone();
+        let t1 = fast.seal(&[1; 12], b"hdr", &mut a);
+        fast.clmul = false;
+        fast.aes = {
+            let mut s = Aes128::new(&key);
+            s.disable_hw();
+            s
+        };
+        let t2 = fast.seal(&[1; 12], b"hdr", &mut b);
+        assert_eq!(a, b);
+        assert_eq!(t1, t2);
     }
 }
