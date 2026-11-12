@@ -1,0 +1,11 @@
+[package]
+name = "flint-libc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Flint's C library, in Rust: the functions Rust's std needs on Linux, with musl's ABI. Replaces musl."
+
+[lib]
+# Linked into every Flint program built for x86_64-unknown-linux-musl (through flint-core);
+# on other targets it is empty.
+path = "src/lib.rs"

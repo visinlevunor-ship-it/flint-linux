@@ -1,5 +1,8 @@
 //! Runs the shell (`flint sh`) on scripts.
 
+// Link Flint's C library into this test, as into the programs it runs.
+use flint_core as _;
+
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};

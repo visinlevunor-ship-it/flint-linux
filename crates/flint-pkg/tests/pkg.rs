@@ -1,6 +1,9 @@
 //! End-to-end tests: build packages, publish a repository, and install, upgrade, remove and
 //! verify into throwaway roots by running the real pkg binary.
 
+// Link Flint's C library into this test, as into the programs it runs.
+use flint_core as _;
+
 use std::fs;
 use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};

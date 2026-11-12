@@ -1,5 +1,8 @@
 //! Runs the core tools through the real flint binary (`flint ls ...`).
 
+// Link Flint's C library into this test, as into the programs it runs.
+use flint_core as _;
+
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::{symlink, PermissionsExt};

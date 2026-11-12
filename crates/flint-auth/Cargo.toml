@@ -6,3 +6,7 @@ rust-version.workspace = true
 description = "Flint account handling: SHA-256, PBKDF2 password hashes, passwd/shadow/group parsing. Pure Rust, no libc."
 
 [dependencies]
+
+# Flint's own C library replaces musl in every program built for Linux.
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "musl"))'.dependencies]
+flint-libc = { path = "../flint-libc" }

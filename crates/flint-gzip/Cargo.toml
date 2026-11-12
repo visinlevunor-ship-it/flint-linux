@@ -6,3 +6,7 @@ rust-version.workspace = true
 description = "DEFLATE and gzip compression and decompression for Flint. Pure Rust, std only."
 
 [dependencies]
+
+# Flint's own C library replaces musl in every program built for Linux.
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "musl"))'.dependencies]
+flint-libc = { path = "../flint-libc" }

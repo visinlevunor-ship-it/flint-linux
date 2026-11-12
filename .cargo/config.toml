@@ -1,5 +1,18 @@
-# FreeBSD's cc (used as the linker when cross-compiling) ignores -static-pie and would
-# produce a *dynamic* binary asking for FreeBSD's loader, which Linux cannot run.
-# A plain static link avoids that.
+# Flint's programs are static x86-64 Linux binaries built on Rust's
+# x86_64-unknown-linux-musl target, but linked against flint-libc (crates/flint-libc),
+# Flint's own C library, instead of musl:
+#
+#  - link-self-contained=no: none of the musl files that come with the target (crt1.o,
+#    libc.a, libunwind.a) are used;
+#  - rust-lld, Rust's own linker, links them: no C compiler or system linker is needed, so
+#    the build works the same on Linux and FreeBSD;
+#  - relocation-model=static: a plain static executable, not static-pie (flint-libc does
+#    not relocate itself at start-up).
 [target.x86_64-unknown-linux-musl]
-rustflags = ["-C", "relocation-model=static"]
+linker = "rust-lld"
+rustflags = [
+    "-C", "linker-flavor=ld.lld",
+    "-C", "link-self-contained=no",
+    "-C", "target-feature=+crt-static",
+    "-C", "relocation-model=static",
+]

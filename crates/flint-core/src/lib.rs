@@ -5,6 +5,10 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+// Links flint-libc, Flint's C library, into every program built for Linux (no musl).
+#[cfg(all(feature = "std", target_os = "linux", target_arch = "x86_64", target_env = "musl"))]
+extern crate flint_libc as _;
+
 #[cfg(feature = "std")]
 pub mod log;
 #[cfg(feature = "std")]

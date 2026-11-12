@@ -5,6 +5,10 @@
 //! * [`files`]: /etc/passwd, /etc/shadow and /etc/group parsing and editing.
 //! * [`login`]: the authentication decision `login` makes.
 
+// Links flint-libc, Flint's C library, into every program built for Linux (no musl).
+#[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "musl"))]
+extern crate flint_libc as _;
+
 pub mod files;
 pub mod hash;
 pub mod hmac;

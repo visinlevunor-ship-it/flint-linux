@@ -2,6 +2,10 @@
 //! data partition). Used by flint-mkimage on the build machine and by the installer and
 //! the first-boot setup on Flint itself, so it is plain std Rust that builds anywhere.
 
+// Links flint-libc, Flint's C library, into every program built for Linux (no musl).
+#[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "musl"))]
+extern crate flint_libc as _;
+
 pub mod ext4;
 pub mod fat;
 pub mod gpt;

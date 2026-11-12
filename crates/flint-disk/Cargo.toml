@@ -6,3 +6,7 @@ rust-version.workspace = true
 description = "Disks for Flint: GPT partition tables, FAT32 and ext4 formatting. Pure Rust, std only."
 
 [dependencies]
+
+# Flint's own C library replaces musl in every program built for Linux.
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "musl"))'.dependencies]
+flint-libc = { path = "../flint-libc" }

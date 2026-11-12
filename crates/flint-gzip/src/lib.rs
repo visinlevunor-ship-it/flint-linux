@@ -1,6 +1,10 @@
 //! gzip (RFC 1952) over DEFLATE (RFC 1951), written for Flint: packages are gzip-compressed
 //! tar archives, and gzip/gunzip/zcat use the same code.
 
+// Links flint-libc, Flint's C library, into every program built for Linux (no musl).
+#[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "musl"))]
+extern crate flint_libc as _;
+
 mod deflate;
 mod inflate;
 
