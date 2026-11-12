@@ -44,6 +44,11 @@ over `/lib/modules` and `/lib/firmware`. A driver then takes memory only when it
 With this layout a booted system uses about 16 MB for the unpacked initramfs, down from 148 MB
 in 0.7.
 
+Measured in QEMU after boot (`free`): 86 MB used in total. Of that, the base system in RAM is
+16 MB, Flint's running programs take 4.7 MB (AnonPages), and nearly all the rest is the kernel:
+its code and data, and slab. Real machines load more drivers (amdgpu, Wi-Fi), so they will use
+more; this has not been measured yet.
+
 `devd` handles hotplugged devices (USB) and the kernel's own module requests.
 
 Graphics:

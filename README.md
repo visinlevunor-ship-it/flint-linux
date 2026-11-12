@@ -17,7 +17,9 @@ package manager, networking, TLS, installer) is Flint's own code.
 
 ## Why Flint
 
-- **Tiny.** About 16 MB of RAM after boot. Every program is one static binary, `/bin/flint`.
+- **Light.** About 86 MB used after boot in QEMU (`free`), most of it the Linux kernel; Flint's
+  own processes take under 5 MB. Real hardware with GPU and Wi-Fi drivers will use more. The
+  base system is one static binary, `/bin/flint` (plus `su` and `passwd`).
 - **Boots anywhere.** Its own UEFI bootloader, and drivers load automatically for whatever
   hardware it finds, including AMD and Intel graphics.
 - **Online by itself.** Wired networks work with no setup, and Wi-Fi works with WPA2. Flint
