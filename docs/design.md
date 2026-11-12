@@ -109,11 +109,30 @@ They are stored in `/etc/shadow` (mode 0600) as
 `$flint1$<iterations>$<salt hex>$<hash hex>`. An empty field, or one starting with `!` or `*`,
 is a locked account.
 
-## Own libc, in stages
+## Own C library: flint-libc
 
-For now the std crates link musl statically. `flint-rt` is its replacement: raw syscalls,
-`_start`, a heap, `mem*` and panics. It is not a C library and cannot run C programs; it exists
-for Flint's own Rust programs. 1.0 is planned for when the userland no longer needs musl.
+Every Flint program runs on **flint-libc** (`crates/flint-libc`), Flint's own C library,
+written in Rust. There is no musl (or glibc) in the userland since 1.0.
+
+It provides what Rust's standard library calls on Linux, with musl's calling conventions and
+struct layouts, so the programs are built for Rust's `x86_64-unknown-linux-musl` target and
+link against flint-libc instead of musl, with no other change:
+
+- program start (`_start`, constructors), thread-local storage and errno;
+- an allocator: 64 KiB spans per size class, returned to the kernel when empty;
+- files, directories, `realpath`, sockets, terminals and time (through the vDSO);
+- threads (`pthread_*`), signals, `fork`/`exec`/`posix_spawn`;
+- `getaddrinfo` (numeric, `/etc/hosts`, DNS over UDP), `getpwuid_r`;
+- the math `awk` uses (sin, cos, exp, log, pow, atan2), tested against glibc to within 2 ulp;
+- the unwinder (`_Unwind_*`): DWARF call-frame information, so panics unwind and `init` can
+  catch them.
+
+Rust's own linker, `rust-lld`, links everything, so the build needs no C toolchain on Linux or
+FreeBSD. The thread control block uses glibc's layout (`%fs:0` self pointer, `%fs:0x28` stack
+guard), the first step toward running programs built for glibc.
+
+`flint-rt` (in `rt/`) is smaller still: raw syscalls, `_start`, a heap and panics, for
+programs that need no C library at all.
 
 ## Versioning
 
@@ -145,6 +164,7 @@ crates/flint-net       netd, net, ping: DHCP, Wi-Fi (nl80211, WPA2)
 crates/flint-crypto    SHA-512, X25519, Ed25519, AES-GCM, HKDF
 crates/flint-web       DNS, TLS 1.3 client, HTTP downloads, fetch
 crates/flint-mkimage   host tool: initramfs, drivers, disk images
+crates/flint-libc      Flint's C library (replaces musl) and unwinder
 boot/                  flint-boot, the UEFI bootloader (separate workspace)
 rt/                    flint-rt and libc-free programs (separate workspace)
 packages/              example package sources
@@ -152,5 +172,6 @@ image/                 build scripts, boot menu, driver list, default /etc
 tests/                 pty and QEMU end-to-end tests
 ```
 
-The `.cargo/config.toml` files carry the linker flags the musl cross-build needs. They matter
-when the host's `cc` is not GNU, as on FreeBSD.
+`.cargo/config.toml` makes builds for `x86_64-unknown-linux-musl` link with `rust-lld` and
+none of the musl files that come with that target. If your Rust install has no `rust-lld`, set
+`CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=ld.lld` (FreeBSD's base system has it).

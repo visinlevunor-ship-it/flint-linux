@@ -8,7 +8,7 @@ The kernel is Linux. Everything else (bootloader, init, shell, core tools,
 package manager, networking, TLS, installer) is Flint's own code.
 
 [![Patreon](https://img.shields.io/badge/Patreon-support%20Flint-f96854?logo=patreon&logoColor=white)](https://www.patreon.com/c/FlintLinux/membership)
-![version](https://img.shields.io/badge/version-0.8-orange)
+![version](https://img.shields.io/badge/version-1.0-orange)
 ![status](https://img.shields.io/badge/status-early%20development-yellow)
 
 </div>
@@ -17,9 +17,11 @@ package manager, networking, TLS, installer) is Flint's own code.
 
 ## Why Flint
 
-- **Light.** About 86 MB used after boot in QEMU (`free`), most of it the Linux kernel; Flint's
-  own processes take under 5 MB. Real hardware with GPU and Wi-Fi drivers will use more. The
+- **Light.** Under 90 MB used after boot in QEMU (`free`), most of it the Linux kernel; Flint's
+  own processes take under 4 MB. Real hardware with GPU and Wi-Fi drivers will use more. The
   base system is one static binary, `/bin/flint` (plus `su` and `passwd`).
+- **No musl, no glibc.** Flint's programs run on **flint-libc**, its own C library, written in
+  Rust: from `_start` and the allocator to threads, DNS and the panic unwinder.
 - **Boots anywhere.** Its own UEFI bootloader, and drivers load automatically for whatever
   hardware it finds, including AMD and Intel graphics.
 - **Online by itself.** Wired networks work with no setup, and Wi-Fi works with WPA2. Flint
@@ -103,10 +105,11 @@ To boot without saving anything to the stick, pick **live** in the boot menu.
 | **Network** | `netd` (DHCP, Wi-Fi, WPA2) · `net` · `ping` · `fetch` (HTTP/HTTPS) |
 | **System** | `pkg` · `flint-install` · `flint-update` · `gzip` |
 | **Crypto** | SHA-2, HMAC, PBKDF2, AES-GCM (AES-NI), X25519, Ed25519, HKDF, TLS 1.3, all in pure Rust |
+| **C library** | `flint-libc`: start-up, malloc, files, threads, signals, processes, sockets, DNS, math, unwinder |
 
 ## Status
 
-**0.8, early development.** Flint is tested in QEMU, and reports from real hardware are very welcome.
+**1.0, early development.** Flint is tested in QEMU, and reports from real hardware are very welcome.
 
 Not there yet:
 - WPA3-only and enterprise Wi-Fi.
@@ -114,6 +117,8 @@ Not there yet:
 - NVIDIA graphics beyond the basic framebuffer.
 - `sh` has no `trap`, aliases, `set -e`, arrays or `[[ ]]`.
 - Secure Boot.
+- Programs built for glibc (Java, Firefox, Steam…) don't run yet: flint-libc speaks musl's
+  ABI so far.
 
 ## Docs
 

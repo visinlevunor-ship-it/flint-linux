@@ -44,6 +44,16 @@ shell without logging in, build with `SERVICES=image/etc/flint/services.qemu-she
 
 Every release was also checked in QEMU with OVMF.
 
+**1.0** (everything on flint-libc, no musl):
+- the whole workspace test suite built for `x86_64-unknown-linux-musl` and linked against
+  flint-libc: 294 tests, including the end-to-end ones that run the real `pkg`, `sh` and tools
+- a std program exercising the heap, threads, mutexes, thread-locals, `catch_unwind`, panics
+  in threads, processes, `realpath`, TCP and DNS
+- flint-libc's math against glibc's libm: within 2 ulp over 1.4 million inputs
+- the USB image booting with init and every program on flint-libc: persistence across
+  reboots (e2fsck clean), drivers from the boot partition, networking, `pkg install` over HTTPS
+- `session.py`: 54/54
+
 **0.8:**
 - the first boot from a USB stick creating its data partition
 - files surviving reboots, with e2fsck finding the data partition clean after shutdown
