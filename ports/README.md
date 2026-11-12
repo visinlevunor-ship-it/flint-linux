@@ -23,6 +23,3 @@ configure scripts run what they compile; `common.sh` lists the other tools neede
 ports/nano/build.sh /tmp/nano && pkg build /tmp/nano repo/x86_64/
 pkg index repo/x86_64/ && pkg sign repo/x86_64/ ~/flint-keys/flint.key
 ```
-
-Programs from Arch Linux need no recipe: `flint-mkimage arch repo/x86_64/ NAME...` converts
-them, with what they depend on.
