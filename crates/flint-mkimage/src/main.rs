@@ -13,10 +13,11 @@ use std::process::ExitCode;
 const USAGE: &str = "\
 usage: flint-mkimage cpio DIR OUTPUT
          pack DIR as a newc cpio archive (everything owned by root)
-       flint-mkimage drivers CONFIG KERNEL_ROOT FIRMWARE_DIR MODULES_OUT FIRMWARE_OUT [GPU_OUT]
-         pick modules (lib/modules/VERSION under KERNEL_ROOT) and firmware by CONFIG,
-         generate modules.dep/alias/softdep, write them as cpio archives (GPU firmware,
-         as CONFIG's gpu-firmware lines say, separately into GPU_OUT if given)
+       flint-mkimage drivers CONFIG KERNEL_ROOT FIRMWARE_DIR EARLY_OUT TREE_OUT
+         pick modules (lib/modules/VERSION under KERNEL_ROOT) and firmware by CONFIG and
+         generate modules.dep/alias/softdep; write all of them as files under TREE_OUT
+         (modules/VERSION/..., firmware/...) and the early ones (CONFIG's early lines, what
+         is needed to reach the boot partition) as the cpio archive EARLY_OUT
        flint-mkimage disk OUTPUT SIZE_MIB DIR [LABEL]
          a GPT disk image with one EFI system partition (FAT32, label FLINT by default)
          holding DIR (long file names are fine)";
@@ -32,11 +33,7 @@ fn run(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         Some("drivers") => {
-            let (conf, kroot, fw, mods_out, fw_out, gpu_out) = match args {
-                [_, c, k, f, m, o] => (c, k, f, m, o, None),
-                [_, c, k, f, m, o, g] => (c, k, f, m, o, Some(g)),
-                _ => return Err(USAGE.into()),
-            };
+            let [_, conf, kroot, fw, early_out, tree_out] = args else { return Err(USAGE.into()) };
             // Walk the real directories, even if the paths given are symlinks to them.
             let real = |p: &String| fs::canonicalize(p).map(|r| r.to_string_lossy().into_owned()).map_err(|e| format!("{p}: {e}"));
             let (kroot, fw) = (&real(kroot)?, &real(fw)?);
@@ -44,19 +41,23 @@ fn run(args: &[String]) -> Result<(), String> {
             let cfg = drivers::Config::parse(&text).map_err(|e| format!("{conf}: {e}"))?;
             let (version, moddir) = drivers::find_module_dir(Path::new(kroot))?;
             let sel = drivers::select_modules(&moddir, &version, &cfg)?;
-            let msize = drivers::write_modules_img(&moddir, &sel, Path::new(mods_out))?;
             let choice = drivers::select_firmware(Path::new(fw), &sel.firmware_wanted, &cfg.firmware)?;
-            // GPU firmware in its own image keeps each image under 100 MB (a limit of some
-            // hosting) and lets a system without those GPUs leave it out.
-            let (gpu, rest): (std::collections::BTreeSet<String>, _) = match gpu_out {
-                Some(_) => choice.files.iter().cloned().partition(|f| cfg.gpu_firmware.iter().any(|p| f.starts_with(p.as_str()))),
-                None => (Default::default(), choice.files.clone()),
-            };
-            let mut fsize = drivers::write_firmware_img(Path::new(fw), &rest, Path::new(fw_out))?;
-            if let Some(g) = gpu_out {
-                fsize += drivers::write_firmware_img(Path::new(fw), &gpu, Path::new(g))?;
-            }
-            println!("kernel {version}: {} modules ({} KiB), {} firmware files ({} KiB)", sel.modules.len(), msize / 1024, choice.files.len(), fsize / 1024);
+            let tree = Path::new(tree_out);
+            let msize = drivers::write_modules_tree(&moddir, &sel, &tree.join("modules"))?;
+            let fsize = drivers::write_firmware_tree(Path::new(fw), &choice.files, &tree.join("firmware"))?;
+            let early = drivers::subset(&sel, &cfg.early);
+            let early_fw = drivers::select_firmware(Path::new(fw), &early.firmware_wanted, &[])?;
+            let esize = drivers::write_early_img(&moddir, Path::new(fw), &early, &early_fw.files, Path::new(early_out))?;
+            println!(
+                "kernel {version}: {} modules ({} KiB), {} firmware files ({} KiB); early: {} modules, {} firmware files ({} KiB)",
+                sel.modules.len(),
+                msize / 1024,
+                choice.files.len(),
+                fsize / 1024,
+                early.modules.len(),
+                early_fw.files.len(),
+                esize / 1024
+            );
             if !choice.missing.is_empty() {
                 println!("{} declared firmware names not found (drivers that need them will say so in dmesg)", choice.missing.len());
             }

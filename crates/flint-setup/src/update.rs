@@ -2,9 +2,9 @@
 //!
 //! The base system is four packages in the Flint repository: flint-system (the base image
 //! and the bootloader), flint-kernel (the kernel Flint comes with, and its drivers),
-//! flint-firmware and flint-gpu-firmware. They hold the same files the boot partition
-//! has; flint-update installs or upgrades them and every other package, then copies what
-//! changed to the boot partition. The new base system starts with the next boot; what is
+//! flint-firmware and flint-gpu-firmware (both into the same firmware tree). They hold the
+//! same files the boot partition has; flint-update installs or upgrades them and every
+//! other package, then copies what changed to the boot partition. The new base system starts with the next boot; what is
 //! on the data partition (packages, files, settings) stays as it is.
 
 use std::fs;
@@ -16,12 +16,11 @@ const SYSTEM_DIR: &str = "/usr/lib/flint/system";
 const BOOT: &str = "/boot";
 
 /// Files in usr/lib/flint/system and where they go on the boot partition, in the order
-/// they are replaced (the kernel last, right after its drivers).
-const PLACES: [(&str, &[&str]); 6] = [
-    ("FIRMWARE.IMG", &["FLINT/FIRMWARE.IMG"]),
-    ("GPU.IMG", &["FLINT/GPU.IMG"]),
+/// they are replaced (the kernel last, right after what it needs).
+const PLACES: [(&str, &[&str]); 5] = [
     ("BASE.IMG", &["FLINT/BASE.IMG"]),
-    ("MODULES.IMG", &["FLINT/MODULES.IMG"]),
+    ("EARLY.IMG", &["FLINT/EARLY.IMG"]),
+    ("RELEASE", &["FLINT/RELEASE"]),
     ("KERNEL", &["FLINT/KERNEL"]),
     ("BOOTX64.EFI", &["EFI/BOOT/BOOTX64.EFI", "EFI/FLINT/BOOTX64.EFI"]),
 ];
@@ -61,6 +60,22 @@ fn free_bytes(dir: &Path) -> u64 {
 pub fn sync_boot(root: &Path, boot: &Path) -> Result<Vec<String>, String> {
     let src_dir = root.join(SYSTEM_DIR.trim_start_matches('/'));
     let mut changed = Vec::new();
+    // Drivers first: firmware, then the modules of the new kernel (beside the old ones).
+    if src_dir.join("firmware").is_dir() {
+        let n = flint_pkg::sync_tree(&src_dir.join("firmware"), &boot.join("FLINT/DRIVERS/firmware")).map_err(|e| format!("firmware: {e}"))?;
+        if n > 0 {
+            changed.push(format!("{n} firmware files"));
+        }
+    }
+    if let Ok(rd) = fs::read_dir(src_dir.join("modules")) {
+        for e in rd.flatten() {
+            let rel = e.file_name().to_string_lossy().into_owned();
+            let n = flint_pkg::sync_tree(&e.path(), &boot.join("FLINT/DRIVERS/modules").join(&rel)).map_err(|err| format!("drivers for {rel}: {err}"))?;
+            if n > 0 {
+                changed.push(format!("drivers for {rel}"));
+            }
+        }
+    }
     for (name, targets) in PLACES {
         let src = src_dir.join(name);
         if !src.is_file() {
@@ -149,6 +164,8 @@ fn run(args: &[String]) -> Result<i32, String> {
         return Err("upgrading packages failed; nothing on the boot partition was changed".into());
     }
     let changed = sync_boot(Path::new("/"), Path::new(BOOT))?;
+    // drops the drivers of a kernel that was replaced
+    flint_pkg::sync_kernels(Path::new("/"))?;
     if changed.is_empty() {
         println!("The base system is up to date.");
     } else {
@@ -173,12 +190,17 @@ mod tests {
         fs::create_dir_all(boot.join("FLINT")).unwrap();
         fs::create_dir_all(boot.join("EFI/BOOT")).unwrap();
         fs::write(sys.join("KERNEL"), "new kernel").unwrap();
+        fs::create_dir_all(sys.join("modules/7.1/kernel")).unwrap();
+        fs::write(sys.join("modules/7.1/modules.dep"), "").unwrap();
+        fs::create_dir_all(sys.join("firmware/amdgpu")).unwrap();
+        fs::write(sys.join("firmware/amdgpu/x.bin"), "fw").unwrap();
         fs::write(sys.join("BASE.IMG"), "same base").unwrap();
         fs::write(sys.join("BOOTX64.EFI"), "loader").unwrap();
         fs::write(boot.join("FLINT/KERNEL"), "old kernel").unwrap();
         fs::write(boot.join("FLINT/BASE.IMG"), "same base").unwrap();
         let changed = sync_boot(&root, &boot).unwrap();
-        assert_eq!(changed, ["FLINT/KERNEL", "EFI/BOOT/BOOTX64.EFI"]);
+        assert_eq!(changed, ["1 firmware files", "drivers for 7.1", "FLINT/KERNEL", "EFI/BOOT/BOOTX64.EFI"]);
+        assert!(boot.join("FLINT/DRIVERS/modules/7.1/modules.dep").is_file());
         assert_eq!(fs::read_to_string(boot.join("FLINT/KERNEL")).unwrap(), "new kernel");
         assert!(!boot.join("EFI/FLINT").exists(), "the installed-system copy only where it exists");
         assert!(sync_boot(&root, &boot).unwrap().is_empty());

@@ -1,11 +1,12 @@
 //! Kernels as packages: `pkg kernels list | install FLAVOR | remove FLAVOR | default FLAVOR`.
 //!
 //! A kernel package is named `linux-FLAVOR` and holds `usr/lib/flint/kernels/FLAVOR/`:
-//! `KERNEL` (the kernel image), `MODULES.IMG` (its drivers, as built by flint-mkimage) and
-//! `RELEASE` (what `uname -r` will say). After every install, upgrade or removal, the
-//! installed kernels are copied to the boot partition (`/boot/FLINT/KERNELS/FLAVOR/`) and
-//! the boot menu gets one entry for each. The kernel the system came with is "generic"
-//! (`/boot/FLINT/KERNEL`), always there.
+//! `KERNEL` (the kernel image), `EARLY.IMG` (the drivers needed to reach the boot
+//! partition), `RELEASE` (what `uname -r` will say) and `modules/RELEASE/` (all its
+//! drivers), as built by flint-mkimage. After every install, upgrade or removal, the
+//! installed kernels are copied to the boot partition (`/boot/FLINT/KERNELS/FLAVOR/`, the
+//! drivers to `/boot/FLINT/DRIVERS/modules/RELEASE/`) and the boot menu gets one entry for
+//! each. The kernel the system came with is "generic" (`/boot/FLINT/KERNEL`), always there.
 
 use std::fs;
 use std::io::{self, Read, Write};
@@ -13,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 pub const BUILTIN: &str = "generic";
 const MARK: &str = "# ---- kernels added by pkg (pkg kernels); this part is rewritten ----";
-const FILES: [&str; 2] = ["KERNEL", "MODULES.IMG"];
+const FILES: [&str; 3] = ["KERNEL", "EARLY.IMG", "RELEASE"];
 
 pub fn package_name(flavor: &str) -> String {
     format!("linux-{flavor}")
@@ -79,6 +80,58 @@ fn install_file(from: &Path, to: &Path) -> io::Result<()> {
     fs::rename(&tmp, to)
 }
 
+/// Make `dst` hold exactly what `src` holds (files compared by content; files and
+/// directories only in `dst` removed). Returns how many files were copied.
+pub fn sync_tree(src: &Path, dst: &Path) -> io::Result<u64> {
+    fs::create_dir_all(dst)?;
+    let mut copied = 0;
+    let mut wanted = std::collections::BTreeSet::new();
+    for e in fs::read_dir(src)? {
+        let e = e?;
+        let name = e.file_name();
+        wanted.insert(name.to_string_lossy().to_lowercase());
+        let (s, d) = (e.path(), dst.join(&name));
+        if fs::metadata(&s)?.is_dir() {
+            if d.is_file() {
+                fs::remove_file(&d)?;
+            }
+            copied += sync_tree(&s, &d)?;
+        } else if !same(&s, &d) {
+            if d.is_dir() {
+                fs::remove_dir_all(&d)?;
+            }
+            install_file(&s, &d)?;
+            copied += 1;
+        }
+    }
+    // (the boot partition is FAT: names compare without case)
+    for e in fs::read_dir(dst)? {
+        let e = e?;
+        if !wanted.contains(&e.file_name().to_string_lossy().to_lowercase()) {
+            let p = e.path();
+            if p.is_dir() {
+                fs::remove_dir_all(&p)?;
+            } else {
+                fs::remove_file(&p)?;
+            }
+        }
+    }
+    Ok(copied)
+}
+
+fn tree_bytes(p: &Path) -> u64 {
+    match fs::metadata(p) {
+        Ok(m) if m.is_dir() => fs::read_dir(p).map(|rd| rd.flatten().map(|e| tree_bytes(&e.path())).sum()).unwrap_or(0),
+        Ok(m) => m.len(),
+        Err(_) => 0,
+    }
+}
+
+/// The release of the kernel the system came with (`/boot/FLINT/RELEASE`).
+fn builtin_release(boot: &Path) -> String {
+    fs::read_to_string(boot.join("RELEASE")).map(|s| s.trim().to_string()).unwrap_or_default()
+}
+
 fn free_bytes(dir: &Path) -> u64 {
     let Ok(c) = std::ffi::CString::new(dir.as_os_str().to_string_lossy().as_bytes()) else { return u64::MAX };
     // SAFETY: statvfs fills the zeroed struct for a valid path.
@@ -113,7 +166,7 @@ fn shared_initrds(cfg: &str) -> Vec<String> {
         }
     }
     if out.is_empty() {
-        out = ["\\FLINT\\BASE.IMG", "\\FLINT\\MODULES.IMG", "\\FLINT\\FIRMWARE.IMG", "\\FLINT\\GPU.IMG"].map(String::from).to_vec();
+        out = ["\\FLINT\\BASE.IMG", "\\FLINT\\EARLY.IMG"].map(String::from).to_vec();
     }
     out
 }
@@ -129,8 +182,8 @@ pub fn menu(cfg: &str, flavors: &[String], chosen: &str) -> String {
     for f in flavors {
         extra.push_str(&format!("\nentry Flint Linux ({f} kernel)\n  kernel \\FLINT\\KERNELS\\{f}\\KERNEL\n"));
         for i in &initrds {
-            if i.eq_ignore_ascii_case("\\FLINT\\MODULES.IMG") {
-                extra.push_str(&format!("  initrd \\FLINT\\KERNELS\\{f}\\MODULES.IMG\n"));
+            if i.eq_ignore_ascii_case("\\FLINT\\EARLY.IMG") {
+                extra.push_str(&format!("  initrd \\FLINT\\KERNELS\\{f}\\EARLY.IMG\n"));
             } else {
                 extra.push_str(&format!("  initrd {i}\n"));
             }
@@ -171,23 +224,33 @@ pub fn sync(root: &Path) -> Result<(), String> {
     let Some(boot) = boot_dir(root) else { return Ok(()) };
     let flavors = installed(root);
     let kdir = boot.join("KERNELS");
+    let mdir = boot.join("DRIVERS/modules");
     for f in &flavors {
         let src = root.join("usr/lib/flint/kernels").join(f);
         let dst = kdir.join(f);
-        fs::create_dir_all(&dst).map_err(|e| format!("{}: {e}", dst.display()))?;
-        let need: u64 = FILES.iter().filter(|n| !same(&src.join(n), &dst.join(n))).map(|n| fs::metadata(src.join(n)).map_or(0, |m| m.len())).sum();
-        if need == 0 {
+        let rel = release(root, f).unwrap_or_default();
+        let msrc = src.join("modules").join(&rel);
+        let mdst = mdir.join(&rel);
+        let files_same = FILES.iter().all(|n| same(&src.join(n), &dst.join(n)));
+        let mods_there = mdst.join("modules.dep").is_file() && same(&msrc.join("modules.dep"), &mdst.join("modules.dep"));
+        if files_same && mods_there {
             continue;
         }
-        if need > free_bytes(&boot) {
+        let need = FILES.iter().map(|n| fs::metadata(src.join(n)).map_or(0, |m| m.len())).sum::<u64>() + if mods_there { 0 } else { tree_bytes(&msrc) };
+        if need > free_bytes(&boot) + tree_bytes(&dst) {
             return Err(format!("the boot partition is too full for the {f} kernel ({} MiB needed, {} MiB free); remove a kernel with pkg kernels remove", need >> 20, free_bytes(&boot) >> 20));
         }
-        for n in FILES {
+        // Drivers first, the kernel last: a half-copied kernel is never the one in the menu.
+        if msrc.is_dir() {
+            sync_tree(&msrc, &mdst).map_err(|e| format!("{}: {e}", mdst.display()))?;
+        }
+        fs::create_dir_all(&dst).map_err(|e| format!("{}: {e}", dst.display()))?;
+        for n in ["EARLY.IMG", "RELEASE", "KERNEL"] {
             if !same(&src.join(n), &dst.join(n)) {
                 install_file(&src.join(n), &dst.join(n)).map_err(|e| format!("{}: {e}", dst.join(n).display()))?;
             }
         }
-        println!("kernel {f} copied to the boot partition");
+        println!("kernel {f} ({rel}) copied to the boot partition");
     }
     if let Ok(rd) = fs::read_dir(&kdir) {
         for e in rd.flatten() {
@@ -195,6 +258,18 @@ pub fn sync(root: &Path) -> Result<(), String> {
             if !flavors.contains(&name) {
                 let _ = fs::remove_dir_all(e.path());
                 println!("kernel {name} removed from the boot partition");
+            }
+        }
+    }
+    // Drivers of kernels that are gone (never those of the kernel Flint came with).
+    let mut keep: Vec<String> = flavors.iter().filter_map(|f| release(root, f)).collect();
+    keep.push(builtin_release(&boot));
+    keep.push(running_release());
+    if let Ok(rd) = fs::read_dir(&mdir) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if !keep.iter().any(|k| k.eq_ignore_ascii_case(&name)) && !builtin_release(&boot).is_empty() {
+                let _ = fs::remove_dir_all(e.path());
             }
         }
     }
@@ -222,18 +297,36 @@ pub fn running_release() -> String {
 mod tests {
     use super::*;
 
-    const CFG: &str = "timeout 3\n\nentry Flint Linux\n  kernel \\FLINT\\KERNEL\n  initrd \\FLINT\\BASE.IMG\n  initrd \\FLINT\\MODULES.IMG\n  initrd \\FLINT\\FIRMWARE.IMG\n  initrd \\FLINT\\GPU.IMG\n  options quiet loglevel=3\n\nentry Verbose\n  kernel \\FLINT\\KERNEL\n  options loglevel=7\n";
+    const CFG: &str = "timeout 3\n\nentry Flint Linux\n  kernel \\FLINT\\KERNEL\n  initrd \\FLINT\\BASE.IMG\n  initrd \\FLINT\\EARLY.IMG\n  options quiet loglevel=3\n\nentry Verbose\n  kernel \\FLINT\\KERNEL\n  options loglevel=7\n";
 
     #[test]
     fn menu_entries_and_default() {
         let m = menu(CFG, &["lts".into(), "zen".into()], "zen");
         assert!(m.contains("default 4"), "two own entries, then lts (3), zen (4):\n{m}");
-        assert!(m.contains("entry Flint Linux (zen kernel)\n  kernel \\FLINT\\KERNELS\\zen\\KERNEL\n  initrd \\FLINT\\BASE.IMG\n  initrd \\FLINT\\KERNELS\\zen\\MODULES.IMG\n  initrd \\FLINT\\FIRMWARE.IMG\n  initrd \\FLINT\\GPU.IMG\n  options quiet loglevel=3\n"), "{m}");
+        assert!(m.contains("entry Flint Linux (zen kernel)\n  kernel \\FLINT\\KERNELS\\zen\\KERNEL\n  initrd \\FLINT\\BASE.IMG\n  initrd \\FLINT\\KERNELS\\zen\\EARLY.IMG\n  options quiet loglevel=3\n"), "{m}");
         // rewriting is stable, and removing all kernels gives the original back (plus default)
         assert_eq!(menu(&m, &["lts".into(), "zen".into()], "zen"), m);
         let back = menu(&m, &[], "zen");
         assert!(!back.contains("KERNELS") && back.contains("default 1"), "{back}");
         assert_eq!(menu(&back, &[], BUILTIN), back);
+    }
+
+    #[test]
+    fn trees_sync_both_ways() {
+        let base = std::env::temp_dir().join(format!("flint-kernels-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let (a, b) = (base.join("a"), base.join("b"));
+        fs::create_dir_all(a.join("x/y")).unwrap();
+        fs::write(a.join("x/y/f"), "1").unwrap();
+        fs::write(a.join("g"), "2").unwrap();
+        assert_eq!(sync_tree(&a, &b).unwrap(), 2);
+        assert_eq!(sync_tree(&a, &b).unwrap(), 0, "nothing changed");
+        fs::write(a.join("g"), "3").unwrap();
+        fs::remove_dir_all(a.join("x")).unwrap();
+        assert_eq!(sync_tree(&a, &b).unwrap(), 1);
+        assert!(!b.join("x").exists(), "gone from the source, gone from the copy");
+        assert_eq!(fs::read_to_string(b.join("g")).unwrap(), "3");
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

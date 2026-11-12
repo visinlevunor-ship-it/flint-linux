@@ -22,6 +22,8 @@ const BLACKLIST: &str = "/etc/flint/modules.blacklist";
 const MODLOAD_USAGE: &str = "usage: modload MODULE [PARAM=VALUE...]   load a module and what it needs
        modload -r MODULE...                   unload modules
        modload --coldplug [--wait SECONDS] [-v]   load drivers for every device present
+       modload --attach DIR [--coldplug ...]  use the drivers in DIR (modules/, firmware/)
+                                              from now on, instead of the ones in RAM
        modload --alias MODALIAS               show which modules match a device alias";
 
 fn index_or_complain(prog: &str) -> Option<Index> {
@@ -34,11 +36,49 @@ fn index_or_complain(prog: &str) -> Option<Index> {
     }
 }
 
+/// Use the drivers kept on the boot partition: bind DIR/modules over /lib/modules and
+/// DIR/firmware over /lib/firmware. Only the early drivers (what reaches the boot
+/// partition) are in RAM; everything else is read from the disk when a device needs it.
+pub fn attach(dir: &Path) -> Result<String, String> {
+    let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").map(|s| s.trim().to_string()).map_err(|e| e.to_string())?;
+    let mods = dir.join("modules");
+    if !mods.join(&release).join("modules.dep").is_file() {
+        return Err(format!("no drivers for kernel {release} in {}", mods.display()));
+    }
+    let bind = |from: &Path, to: &str| -> Result<(), String> {
+        std::fs::create_dir_all(to).map_err(|e| format!("{to}: {e}"))?;
+        flint_core::sys::mount(&from.to_string_lossy(), to, "", libc::MS_BIND, None).map_err(|e| format!("bind {} on {to}: {e}", from.display()))?;
+        // read-only: the boot partition is not changed through these paths
+        let _ = flint_core::sys::mount("", to, "", libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY, None);
+        Ok(())
+    };
+    bind(&mods, "/lib/modules")?;
+    let fw = dir.join("firmware");
+    if fw.is_dir() {
+        bind(&fw, "/lib/firmware")?;
+    }
+    Ok(format!("drivers and firmware from {}", dir.display()))
+}
+
 /// `modload`: modprobe for Flint.
 pub fn modload(args: Vec<String>) -> i32 {
     let rest: Vec<String> = args.into_iter().skip(1).collect();
     let verbose = rest.iter().any(|a| a == "-v");
-    let rest: Vec<String> = rest.into_iter().filter(|a| a != "-v").collect();
+    let mut rest: Vec<String> = rest.into_iter().filter(|a| a != "-v").collect();
+    if rest.first().map(String::as_str) == Some("--attach") {
+        let Some(dir) = rest.get(1).cloned() else {
+            eprintln!("{MODLOAD_USAGE}");
+            return 2;
+        };
+        match attach(Path::new(&dir)) {
+            Ok(m) => eprintln!("modload: {m}"),
+            Err(e) => eprintln!("modload: {e}; using the drivers in RAM"),
+        }
+        rest.drain(..2);
+        if rest.is_empty() {
+            return 0;
+        }
+    }
     match rest.first().map(String::as_str) {
         None | Some("-h" | "--help") => {
             println!("{MODLOAD_USAGE}");

@@ -1,12 +1,14 @@
 # Boot tasks: one command per line, run in order (each waited for, 30 s limit) before
 # services start. No shell and no quoting.
 
-# Drivers for every device present (storage, input, network, Wi-Fi, ...).
+# The drivers in RAM: what is needed to reach the boot partition (disks, USB, filesystems).
 /sbin/modload --coldplug --wait 10
-# The partition Flint booted from, at /boot: saved settings live there.
+# The partition Flint booted from, at /boot: drivers, firmware and saved settings live there.
 /sbin/mountboot --wait 15
 # Keep changes across reboots on the data partition of the boot disk (made on first boot
 # from a USB stick); built into init. Boot with flint.persist=0 to skip it.
 @persist
+# All the other drivers (network, Wi-Fi, graphics, ...), loaded from the boot partition.
+/sbin/modload --attach /boot/FLINT/DRIVERS --coldplug --wait 10
 /bin/mkdir -p /home/flint
 /bin/chown 1000:1000 /home/flint

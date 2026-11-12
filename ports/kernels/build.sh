@@ -108,16 +108,20 @@ if [ -z "${KEEP_MODULES:-}" ]; then
     find "$K/lib/modules" -name '*.ko' -print0 | xargs -0 -n 64 -P "${JOBS:-8}" gzip -9n
 fi
 
-"$HOSTBIN/flint-mkimage" drivers "$DRIVERS" "$K" "$FIRMWARE" "$WORK/MODULES.IMG" "$WORK/fw.img" "$WORK/gpu.img" > "$WORK/drivers.log"
+"$HOSTBIN/flint-mkimage" drivers "$DRIVERS" "$K" "$FIRMWARE" "$WORK/EARLY.IMG" "$WORK/DRIVERS" > "$WORK/drivers.log"
 head -n 1 "$WORK/drivers.log"
 
 D="$OUT/files/usr/lib/flint/kernels/$FLAVOR"
 rm -rf "$OUT"
 mkdir -p "$D"
 cp "$K/boot/vmlinuz-$KVER" "$D/KERNEL"
-cp "$WORK/MODULES.IMG" "$D/MODULES.IMG"
+cp "$WORK/EARLY.IMG" "$D/EARLY.IMG"
 echo "$KVER" > "$D/RELEASE"
-chmod 644 "$D/KERNEL" "$D/MODULES.IMG" "$D/RELEASE"
+# all its drivers (the firmware is shared with the other kernels: not part of the package)
+mkdir -p "$D/modules"
+cp -R "$WORK/DRIVERS/modules/$KVER" "$D/modules/"
+find "$D" -type f -exec chmod 644 {} +
+find "$D" -type d -exec chmod 755 {} +
 cat > "$OUT/control" <<EOF
 name: linux-$FLAVOR
 version: $VERSION

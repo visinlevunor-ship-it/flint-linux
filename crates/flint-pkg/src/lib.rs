@@ -11,6 +11,11 @@ mod resolve;
 mod tar;
 mod version;
 
+/// Make one directory tree an exact copy of another (used for the boot partition).
+pub use kernels::sync_tree;
+/// Bring the boot partition in line with the installed kernel packages.
+pub use kernels::sync as sync_kernels;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 

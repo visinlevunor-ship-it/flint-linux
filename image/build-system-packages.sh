@@ -33,18 +33,25 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/flint-syspkg.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
 "$HOSTBIN/flint-mkimage" drivers "$DRIVERS" "$LINUX/kernel" "$LINUX/firmware/lib/firmware" \
-    "$WORK/MODULES.IMG" "$WORK/FIRMWARE.IMG" "$WORK/GPU.IMG" | head -n 1
+    "$WORK/EARLY.IMG" "$WORK/DRIVERS" | head -n 1
+# GPU firmware is its own package, so no package is over 100 MB (GitHub's file limit).
+GPUDIRS="amdgpu radeon i915 xe nvidia"
+mkdir -p "$WORK/gpufw"
+for g in $GPUDIRS; do
+    [ -d "$WORK/DRIVERS/firmware/$g" ] && mv "$WORK/DRIVERS/firmware/$g" "$WORK/gpufw/"
+done
 
-stage() { # NAME VERSION DESCRIPTION FILE...
+stage() { # NAME VERSION DESCRIPTION FILE-OR-DIR...  (each copied into usr/lib/flint/system)
     name=$1 version=$2 desc=$3
     shift 3
     d="$WORK/$name"
     mkdir -p "$d/files/usr/lib/flint/system"
     printf 'name: %s\nversion: %s\ndescription: %s\narch: x86_64\n' "$name" "$version" "$desc" > "$d/control"
     for f in "$@"; do
-        cp "$f" "$d/files/usr/lib/flint/system/"
+        cp -R "$f" "$d/files/usr/lib/flint/system/"
     done
-    chmod 644 "$d"/files/usr/lib/flint/system/*
+    find "$d/files" -type f -exec chmod 644 {} +
+    find "$d/files" -type d -exec chmod 755 {} +
     "$HOSTBIN/pkg" build "$d" "$REPO"
 }
 
@@ -52,8 +59,11 @@ echo "$FLINTVER" > "$WORK/VERSION"
 cp "$BASE" "$WORK/BASE.IMG"
 cp "$BOOTEFI" "$WORK/BOOTX64.EFI"
 cp "$KERNEL" "$WORK/KERNEL"
+echo "$KVER" > "$WORK/RELEASE"
+mkdir -p "$WORK/gpu/firmware"
+mv "$WORK"/gpufw/* "$WORK/gpu/firmware/" 2>/dev/null || true
 stage flint-system "$FLINTVER.$STAMP" "Flint Linux $FLINTVER base system and bootloader" "$WORK/BASE.IMG" "$WORK/BOOTX64.EFI" "$WORK/VERSION"
-stage flint-kernel "$KVER.$STAMP" "Linux $KVER, the kernel Flint comes with, and its drivers" "$WORK/KERNEL" "$WORK/MODULES.IMG"
-stage flint-firmware "$FLINTVER.$STAMP" "Device firmware (network, Wi-Fi, storage, ...)" "$WORK/FIRMWARE.IMG"
-stage flint-gpu-firmware "$FLINTVER.$STAMP" "Graphics firmware (AMD, Intel)" "$WORK/GPU.IMG"
+stage flint-kernel "$KVER.$STAMP" "Linux $KVER, the kernel Flint comes with, and its drivers" "$WORK/KERNEL" "$WORK/EARLY.IMG" "$WORK/RELEASE" "$WORK/DRIVERS/modules"
+stage flint-firmware "$FLINTVER.$STAMP" "Device firmware (network, Wi-Fi, storage, ...)" "$WORK/DRIVERS/firmware"
+stage flint-gpu-firmware "$FLINTVER.$STAMP" "Graphics firmware (AMD, Intel)" "$WORK/gpu/firmware"
 echo "next: $HOSTBIN/pkg index $REPO && $HOSTBIN/pkg sign $REPO YOUR.key"

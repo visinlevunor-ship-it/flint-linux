@@ -51,9 +51,11 @@ trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/EFI/BOOT" "$STAGE/FLINT"
 cp "$BOOTEFI" "$STAGE/EFI/BOOT/BOOTX64.EFI"
 cp "$KERNEL" "$STAGE/FLINT/KERNEL"
+echo "${KERNEL##*/vmlinuz-}" > "$STAGE/FLINT/RELEASE"
 cp "$BASE" "$STAGE/FLINT/BASE.IMG"
 cp "$BOOTCFG" "$STAGE/FLINT/BOOT.CFG"
+# Drivers: the early ones in RAM (EARLY.IMG), all of them as files on the partition.
 "$MKIMAGE" drivers "$DRIVERS" "$LINUX/kernel" "$LINUX/firmware/lib/firmware" \
-    "$STAGE/FLINT/MODULES.IMG" "$STAGE/FLINT/FIRMWARE.IMG" "$STAGE/FLINT/GPU.IMG"
+    "$STAGE/FLINT/EARLY.IMG" "$STAGE/FLINT/DRIVERS"
 mkdir -p "$(dirname "$OUT")"
 "$MKIMAGE" disk "$OUT" "$SIZE" "$STAGE"

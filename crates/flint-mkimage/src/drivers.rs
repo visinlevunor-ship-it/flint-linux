@@ -1,6 +1,8 @@
-//! Choosing the kernel modules and firmware that go into the image, and writing them as two
-//! initramfs segments (`lib/modules/VERSION/...` and `lib/firmware/...`). Also generates
-//! modules.dep / modules.alias / modules.softdep, which kernel packages leave to depmod.
+//! Choosing the kernel modules and firmware Flint ships, and writing them out: all of them as
+//! files for the boot partition (`DRIVERS/modules/VERSION/...`, `DRIVERS/firmware/...`, used
+//! from there, so they take no RAM), and the few needed to reach that partition (storage,
+//! USB, filesystems) as a small initramfs segment. Also generates modules.dep /
+//! modules.alias / modules.softdep, which kernel packages leave to depmod.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
@@ -19,8 +21,8 @@ pub struct Config {
     pub skip: Vec<String>,
     /// Firmware files to include besides what modules declare (glob patterns).
     pub firmware: Vec<String>,
-    /// Firmware under these directories goes into the separate GPU firmware image.
-    pub gpu_firmware: Vec<String>,
+    /// Modules needed before the boot partition is mounted, by prefix (with what they need).
+    pub early: Vec<String>,
 }
 
 impl Config {
@@ -37,8 +39,8 @@ impl Config {
                 "module" => c.include.push(v),
                 "skip" => c.skip.push(v),
                 "firmware" => c.firmware.push(v),
-                "gpu-firmware" => c.gpu_firmware.push(v.trim_end_matches('/').to_string() + "/"),
-                _ => return Err(format!("line {}: unknown key '{k}' (module, skip, firmware or gpu-firmware)", n + 1)),
+                "early" => c.early.push(v),
+                _ => return Err(format!("line {}: unknown key '{k}' (module, skip, firmware or early)", n + 1)),
             }
         }
         Ok(c)
@@ -138,6 +140,8 @@ pub struct Selection {
     pub aliases: Vec<(String, String)>,
     pub softdeps: Vec<(String, String)>,
     pub firmware_wanted: BTreeSet<String>,
+    /// module name -> firmware it declares
+    pub firmware_of: BTreeMap<String, Vec<String>>,
 }
 
 fn matches_prefix(rel: &str, prefixes: &[String]) -> bool {
@@ -153,7 +157,7 @@ pub fn select_modules(moddir: &Path, version: &str, cfg: &Config) -> Result<Sele
         .map(|(r, _)| (module_name(&r), format!("kernel/{r}")))
         .collect();
     let mut queue: VecDeque<String> = all.iter().filter(|(_, rel)| matches_prefix(rel, &cfg.include) && !matches_prefix(rel, &cfg.skip)).map(|(n, _)| n.clone()).collect();
-    let mut sel = Selection { version: version.to_string(), modules: BTreeMap::new(), deps: BTreeMap::new(), aliases: Vec::new(), softdeps: Vec::new(), firmware_wanted: BTreeSet::new() };
+    let mut sel = Selection { version: version.to_string(), modules: BTreeMap::new(), deps: BTreeMap::new(), aliases: Vec::new(), softdeps: Vec::new(), firmware_wanted: BTreeSet::new(), firmware_of: BTreeMap::new() };
     while let Some(name) = queue.pop_front() {
         if sel.modules.contains_key(&name) {
             continue;
@@ -166,6 +170,7 @@ pub fn select_modules(moddir: &Path, version: &str, cfg: &Config) -> Result<Sele
                 "alias" => sel.aliases.push((v, name.clone())),
                 "depends" => deps.extend(v.split(',').filter(|d| !d.is_empty()).map(normalize)),
                 "firmware" => {
+                    sel.firmware_of.entry(name.clone()).or_default().push(v.clone());
                     sel.firmware_wanted.insert(v);
                 }
                 "softdep" => {
@@ -184,6 +189,37 @@ pub fn select_modules(moddir: &Path, version: &str, cfg: &Config) -> Result<Sele
         sel.modules.insert(name, rel.clone());
     }
     Ok(sel)
+}
+
+/// The modules matching `prefixes`, with everything they need (dependencies and soft
+/// dependencies), as a selection of their own.
+pub fn subset(sel: &Selection, prefixes: &[String]) -> Selection {
+    let mut keep: BTreeSet<String> = sel.modules.iter().filter(|(_, rel)| matches_prefix(rel, prefixes)).map(|(n, _)| n.clone()).collect();
+    let mut queue: VecDeque<String> = keep.iter().cloned().collect();
+    while let Some(n) = queue.pop_front() {
+        let mut more: Vec<String> = sel.deps.get(&n).cloned().unwrap_or_default();
+        for (m, v) in &sel.softdeps {
+            if *m == n {
+                more.extend(v.split_whitespace().filter(|w| !w.ends_with(':')).map(normalize));
+            }
+        }
+        for d in more {
+            if sel.modules.contains_key(&d) && keep.insert(d.clone()) {
+                queue.push_back(d);
+            }
+        }
+    }
+    let modules: BTreeMap<String, String> = sel.modules.iter().filter(|(n, _)| keep.contains(*n)).map(|(n, r)| (n.clone(), r.clone())).collect();
+    let firmware_of: BTreeMap<String, Vec<String>> = sel.firmware_of.iter().filter(|(n, _)| keep.contains(*n)).map(|(n, f)| (n.clone(), f.clone())).collect();
+    Selection {
+        version: sel.version.clone(),
+        deps: sel.deps.iter().filter(|(n, _)| keep.contains(*n)).map(|(n, d)| (n.clone(), d.clone())).collect(),
+        aliases: sel.aliases.iter().filter(|(_, m)| keep.contains(m)).cloned().collect(),
+        softdeps: sel.softdeps.iter().filter(|(m, _)| keep.contains(m)).cloned().collect(),
+        firmware_wanted: firmware_of.values().flatten().cloned().collect(),
+        firmware_of,
+        modules,
+    }
 }
 
 /// All modules `name` needs, directly or not, nearest first.
@@ -327,20 +363,8 @@ fn parents(prefix: &str, paths: impl Iterator<Item = String>) -> BTreeSet<String
     dirs
 }
 
-pub fn write_modules_img(moddir: &Path, sel: &Selection, out: &Path) -> Result<u64, String> {
-    let prefix = format!("lib/modules/{}", sel.version);
-    let f = fs::File::create(out).map_err(|e| format!("{}: {e}", out.display()))?;
-    let mut w = cpio::Writer::new(BufWriter::new(f));
-    let err = |e: io::Error| e.to_string();
-    for d in parents(&prefix, sel.modules.values().cloned()) {
-        w.dir(&d, 0o755).map_err(err)?;
-    }
-    let mut total = 0u64;
-    for rel in sel.modules.values() {
-        let data = fs::read(moddir.join(rel)).map_err(|e| format!("{rel}: {e}"))?;
-        total += data.len() as u64;
-        w.file(&format!("{prefix}/{rel}"), 0o644, &data).map_err(err)?;
-    }
+/// modules.dep, modules.alias and modules.softdep for a selection.
+fn index_files(sel: &Selection) -> [(&'static str, String); 3] {
     let mut dep = String::new();
     for (name, rel) in &sel.modules {
         let deps: Vec<String> = closure(sel, name).iter().filter_map(|d| sel.modules.get(d).cloned()).collect();
@@ -354,42 +378,91 @@ pub fn write_modules_img(moddir: &Path, sel: &Selection, out: &Path) -> Result<u
     for (m, s) in &sel.softdeps {
         soft.push_str(&format!("softdep {m} {s}\n"));
     }
-    w.file(&format!("{prefix}/modules.dep"), 0o644, dep.as_bytes()).map_err(err)?;
-    w.file(&format!("{prefix}/modules.alias"), 0o644, alias.as_bytes()).map_err(err)?;
-    w.file(&format!("{prefix}/modules.softdep"), 0o644, soft.as_bytes()).map_err(err)?;
+    [("modules.dep", dep), ("modules.alias", alias), ("modules.softdep", soft)]
+}
+
+fn write_file(path: &Path, data: &[u8]) -> Result<(), String> {
+    if let Some(d) = path.parent() {
+        fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
+    }
+    fs::write(path, data).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The modules as files: `out/VERSION/kernel/...` plus the index files. Returns bytes.
+pub fn write_modules_tree(moddir: &Path, sel: &Selection, out: &Path) -> Result<u64, String> {
+    let base = out.join(&sel.version);
+    let mut total = 0u64;
+    for rel in sel.modules.values() {
+        let data = fs::read(moddir.join(rel)).map_err(|e| format!("{rel}: {e}"))?;
+        total += data.len() as u64;
+        write_file(&base.join(rel), &data)?;
+    }
+    for (name, text) in index_files(sel) {
+        write_file(&base.join(name), text.as_bytes())?;
+    }
+    for extra in ["modules.builtin", "modules.builtin.modinfo", "modules.order"] {
+        if let Ok(data) = fs::read(moddir.join(extra)) {
+            write_file(&base.join(extra), &data)?;
+        }
+    }
+    Ok(total)
+}
+
+/// The firmware as files under `out`. Symlinks become copies of what they point at (the
+/// boot partition is FAT, which has no symlinks). Names that differ only in case would be
+/// the same file on FAT: the first one wins. Returns bytes.
+pub fn write_firmware_tree(fw_root: &Path, files: &BTreeSet<String>, out: &Path) -> Result<u64, String> {
+    let mut total = 0u64;
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for rel in files {
+        if !seen.insert(rel.to_lowercase()) {
+            continue;
+        }
+        let p = fw_root.join(rel);
+        let data = fs::read(&p).map_err(|e| format!("{rel}: {e}"))?;
+        total += data.len() as u64;
+        write_file(&out.join(rel), &data)?;
+    }
+    Ok(total)
+}
+
+/// The early modules and their firmware as one initramfs segment.
+pub fn write_early_img(moddir: &Path, fw_root: &Path, sel: &Selection, firmware: &BTreeSet<String>, out: &Path) -> Result<u64, String> {
+    let prefix = format!("lib/modules/{}", sel.version);
+    let f = fs::File::create(out).map_err(|e| format!("{}: {e}", out.display()))?;
+    let mut w = cpio::Writer::new(BufWriter::new(f));
+    let err = |e: io::Error| e.to_string();
+    let mut dirs = parents(&prefix, sel.modules.values().cloned());
+    if !firmware.is_empty() {
+        dirs.extend(parents("lib/firmware", firmware.iter().cloned()));
+    }
+    for d in dirs {
+        w.dir(&d, 0o755).map_err(err)?;
+    }
+    let mut total = 0u64;
+    for rel in sel.modules.values() {
+        let data = fs::read(moddir.join(rel)).map_err(|e| format!("{rel}: {e}"))?;
+        total += data.len() as u64;
+        w.file(&format!("{prefix}/{rel}"), 0o644, &data).map_err(err)?;
+    }
+    for (name, text) in index_files(sel) {
+        w.file(&format!("{prefix}/{name}"), 0o644, text.as_bytes()).map_err(err)?;
+    }
     for extra in ["modules.builtin", "modules.builtin.modinfo", "modules.order"] {
         if let Ok(data) = fs::read(moddir.join(extra)) {
             w.file(&format!("{prefix}/{extra}"), 0o644, &data).map_err(err)?;
         }
     }
+    for rel in firmware {
+        let data = fs::read(fw_root.join(rel)).map_err(|e| format!("{rel}: {e}"))?;
+        total += data.len() as u64;
+        w.file(&format!("lib/firmware/{rel}"), 0o644, &data).map_err(err)?;
+    }
     w.finish().map_err(err)?;
     Ok(total)
 }
 
-pub fn write_firmware_img(fw_root: &Path, files: &BTreeSet<String>, out: &Path) -> Result<u64, String> {
-    let prefix = "lib/firmware";
-    let f = fs::File::create(out).map_err(|e| format!("{}: {e}", out.display()))?;
-    let mut w = cpio::Writer::new(BufWriter::new(f));
-    let err = |e: io::Error| e.to_string();
-    for d in parents(prefix, files.iter().cloned()) {
-        w.dir(&d, 0o755).map_err(err)?;
-    }
-    let mut total = 0u64;
-    for rel in files {
-        let p = fw_root.join(rel);
-        let meta = fs::symlink_metadata(&p).map_err(|e| format!("{rel}: {e}"))?;
-        if meta.file_type().is_symlink() {
-            let t = fs::read_link(&p).map_err(|e| format!("{rel}: {e}"))?;
-            w.symlink(&format!("{prefix}/{rel}"), &t.to_string_lossy()).map_err(err)?;
-        } else {
-            let data = fs::read(&p).map_err(|e| format!("{rel}: {e}"))?;
-            total += data.len() as u64;
-            w.file(&format!("{prefix}/{rel}"), 0o644, &data).map_err(err)?;
-        }
-    }
-    w.finish().map_err(err)?;
-    Ok(total)
-}
+
 
 #[cfg(test)]
 mod tests {
