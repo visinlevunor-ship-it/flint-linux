@@ -16,6 +16,8 @@
 #   OVERLAY   directory copied over the finished rootfs       (optional, for test files)
 #   RTBINDIR  libc-free flint-rt programs, installed under /usr/lib/flint if present
 #                                                             (default rt/target/$TARGET/$PROFILE)
+#   GLIBC     flint-glibc's loader, installed as /lib64/ld-linux-x86-64.so.2 if present
+#             (default rt/target/glibc/ld-flint.so; build with: rt/flint-glibc/build.sh rt/target/glibc)
 #
 # POSIX sh only: runs on FreeBSD and Linux hosts.
 set -eu
@@ -26,6 +28,7 @@ PROFILE=${PROFILE:-release}
 BINDIR=${BINDIR:-$ROOT/target/$TARGET/$PROFILE}
 HOSTBIN=${HOSTBIN:-$ROOT/target/release}
 RTBINDIR=${RTBINDIR:-$ROOT/rt/target/$TARGET/$PROFILE}
+GLIBC=${GLIBC:-$ROOT/rt/target/glibc/ld-flint.so}
 SERVICES=${SERVICES:-$ROOT/image/etc/flint/services.qemu}
 BOOT=${BOOT:-$ROOT/image/etc/flint/boot.qemu}
 OUT=${1:-$ROOT/target/flint-base.img}
@@ -70,6 +73,17 @@ chmod 4755 "$RFS/bin/su" "$RFS/bin/passwd"
 # Programs on flint-rt (no libc at all), kept out of PATH.
 if [ -x "$RTBINDIR/flint-version" ]; then
     cp "$RTBINDIR/flint-version" "$RFS/usr/lib/flint/version-nolibc"
+fi
+
+# Programs built for glibc name /lib64/ld-linux-x86-64.so.2 as their interpreter: flint-glibc
+# is that loader and answers for libc.so.6 and glibc's other libraries itself.
+if [ -f "$GLIBC" ]; then
+    mkdir -p "$RFS/lib64"
+    cp "$GLIBC" "$RFS/lib64/ld-linux-x86-64.so.2"
+    chmod 755 "$RFS/lib64/ld-linux-x86-64.so.2"
+else
+    echo "note: no flint-glibc at $GLIBC; programs built for glibc won't run" >&2
+    echo "      (build it with: rt/flint-glibc/build.sh rt/target/glibc)" >&2
 fi
 
 cp "$BOOT" "$RFS/etc/flint/boot"

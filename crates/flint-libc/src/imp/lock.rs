@@ -41,6 +41,11 @@ impl Lock {
     }
 
     #[inline]
+    pub fn try_lock(&self) -> bool {
+        self.0.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed).is_ok()
+    }
+
+    #[inline]
     pub fn unlock(&self) {
         if self.0.swap(0, Ordering::Release) == 2 {
             futex_wake(&self.0, 1);

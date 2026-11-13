@@ -10,7 +10,14 @@ use core::arch::asm;
 use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 
+#[cfg(not(feature = "glibc"))]
 pub const KEYS_MAX: usize = 128;
+#[cfg(feature = "glibc")]
+const _: () = assert!(core::mem::offset_of!(Thread, tid) == 720);
+
+/// glibc's PTHREAD_KEYS_MAX: GTK and friends use keys freely
+#[cfg(feature = "glibc")]
+pub const KEYS_MAX: usize = 1024;
 
 #[repr(C)]
 pub struct Thread {
@@ -24,10 +31,17 @@ pub struct Thread {
     pub stack_guard: usize,   // %fs:0x28
     pub pointer_guard: usize, // %fs:0x30
     pub _tcbhead_rest: [usize; 7],
-    // --- flint ---
-    pub errno: i32,
+    /// The rest of glibc's tcbhead_t (704 bytes) and struct pthread's list head, so that
+    /// `tid` sits where glibc keeps it: programs that clone() by hand (Firefox's sandbox)
+    /// find and fix glibc's cached thread id there.
+    #[cfg(feature = "glibc")]
+    pub _glibc_pthread: [usize; 76],
     /// The kernel clears this and wakes it when the thread exits (CLONE_CHILD_CLEARTID).
     pub tid: AtomicI32,
+    // --- flint ---
+    pub errno: i32,
+    /// glibc's h_errno (netdb lookups)
+    pub h_errno: i32,
     /// 0 joinable, 1 detached, 2 finished (and not detached)
     pub state: AtomicI32,
     pub result: *mut core::ffi::c_void,
@@ -43,15 +57,30 @@ pub struct Thread {
     pub key_gen: [u32; KEYS_MAX],
 }
 
-/// The program's TLS template (from PT_TLS), filled in by `init_main`.
-pub struct TlsImage {
+/// One object's TLS template and where its block sits: `offset` bytes below the thread
+/// pointer (x86-64 variant II). A static program has one; flint-glibc's loader adds one per
+/// loaded object with a PT_TLS segment.
+#[derive(Clone, Copy)]
+pub struct TlsModule {
     pub image: usize,
     pub filesz: usize,
     pub memsz: usize,
     pub align: usize,
+    pub offset: usize,
 }
 
-pub static mut IMAGE: TlsImage = TlsImage { image: 0, filesz: 0, memsz: 0, align: 16 };
+pub const MAX_MODULES: usize = 64;
+const NO_MODULE: TlsModule = TlsModule { image: 0, filesz: 0, memsz: 0, align: 1, offset: 0 };
+/// Static TLS modules; module id N (as in dl_iterate_phdr and __tls_get_addr) is MODULES[N-1].
+pub static mut MODULES: [TlsModule; MAX_MODULES] = [NO_MODULE; MAX_MODULES];
+pub static mut NMODULES: usize = 0;
+/// Bytes below the thread pointer for all static TLS (the loader may reserve extra, for
+/// objects opened later that use the initial-exec model), and their alignment.
+pub static mut STATIC_SIZE: usize = 0;
+pub static mut STATIC_ALIGN: usize = 16;
+/// Room set aside below the thread pointer in every thread (flint-glibc reserves some for
+/// libraries opened later); the TLS area is at least this big.
+pub static mut RESERVE: usize = 0;
 static MAIN_TLS: AtomicUsize = AtomicUsize::new(0);
 
 #[inline(always)]
@@ -62,35 +91,56 @@ pub fn current() -> *mut Thread {
     t
 }
 
-fn round_up(x: usize, a: usize) -> usize {
+pub fn round_up(x: usize, a: usize) -> usize {
     (x + a - 1) & !(a - 1)
+}
+
+/// Add a module to static TLS (before any thread but the main one exists, or into space
+/// reserved for it). Returns its module id.
+pub unsafe fn add_module(image: usize, filesz: usize, memsz: usize, align: usize) -> usize {
+    let n = &mut *ptr::addr_of_mut!(NMODULES);
+    let align = align.max(1);
+    let size = &mut *ptr::addr_of_mut!(STATIC_SIZE);
+    let offset = round_up(*size + memsz, align);
+    *size = offset;
+    let a = &mut *ptr::addr_of_mut!(STATIC_ALIGN);
+    *a = (*a).max(align);
+    (*ptr::addr_of_mut!(MODULES))[*n] = TlsModule { image, filesz, memsz, align, offset };
+    *n += 1;
+    *n
 }
 
 /// Bytes below the thread block taken by the TLS area.
 pub fn tls_offset() -> usize {
-    // SAFETY: IMAGE is written once, before any thread exists.
-    let img = unsafe { &*ptr::addr_of!(IMAGE) };
-    round_up(img.memsz, img.align.max(1))
+    // SAFETY: written before any thread but the main one exists.
+    unsafe { round_up(STATIC_SIZE.max(RESERVE), STATIC_ALIGN.max(1)) }
 }
 
 /// Bytes needed for the TLS area plus the thread block, and the block's alignment.
 pub fn block_size() -> (usize, usize) {
     // SAFETY: as above.
-    let align = unsafe { (*ptr::addr_of!(IMAGE)).align }.max(core::mem::align_of::<Thread>()).max(64);
+    let align = unsafe { STATIC_ALIGN }.max(core::mem::align_of::<Thread>()).max(64);
     (tls_offset() + core::mem::size_of::<Thread>() + align, align)
+}
+
+/// Copy every static module's TLS image into the area below thread pointer `tp`.
+pub unsafe fn init_static_tls(tp: usize) {
+    let mods = &*ptr::addr_of!(MODULES);
+    for m in &mods[..NMODULES] {
+        let block = tp - m.offset;
+        if m.filesz > 0 {
+            ptr::copy_nonoverlapping(m.image as *const u8, block as *mut u8, m.filesz);
+        }
+        ptr::write_bytes((block + m.filesz) as *mut u8, 0, m.memsz - m.filesz);
+    }
 }
 
 /// Lay out the TLS area and thread block inside `mem` (at least `block_size().0` bytes,
 /// zeroed) and return the thread block.
 pub unsafe fn setup_block(mem: usize) -> *mut Thread {
     let (_, align) = block_size();
-    let img = &*ptr::addr_of!(IMAGE);
     let tp = round_up(mem + tls_offset(), align);
-    let tls = tp - tls_offset();
-    if img.filesz > 0 {
-        ptr::copy_nonoverlapping(img.image as *const u8, tls as *mut u8, img.filesz);
-    }
-    // the rest of the TLS area (.tbss) is already zero: fresh anonymous memory
+    init_static_tls(tp);
     let t = tp as *mut Thread;
     (*t).tcb = t;
     (*t).self_ = t;
@@ -122,13 +172,19 @@ pub unsafe fn init_main(phdr: usize, phnum: usize, random: usize) {
     for i in 0..phnum {
         let p = phdr + i * 56;
         if *(p as *const u32) == PT_TLS {
-            let img = &mut *ptr::addr_of_mut!(IMAGE);
-            img.image = bias.wrapping_add(*((p + 16) as *const usize));
-            img.filesz = *((p + 32) as *const usize);
-            img.memsz = *((p + 40) as *const usize);
-            img.align = (*((p + 48) as *const usize)).max(1);
+            add_module(
+                bias.wrapping_add(*((p + 16) as *const usize)),
+                *((p + 32) as *const usize),
+                *((p + 40) as *const usize),
+                *((p + 48) as *const usize),
+            );
         }
     }
+    init_main_block(random);
+}
+
+/// Build the main thread's block for the static TLS laid out so far and point %fs at it.
+pub unsafe fn init_main_block(random: usize) {
     let (size, _) = block_size();
     let mem = sys::sc6(sys::MMAP, 0, size, 3 /* rw */, 0x22 /* private|anon */, usize::MAX, 0);
     if mem < 0 {
@@ -143,6 +199,12 @@ pub unsafe fn init_main(phdr: usize, phnum: usize, random: usize) {
     }
     (*t).tid.store(sys::sc0(sys::GETTID) as i32, Ordering::Relaxed);
     set_fs(t);
+    MAIN_TLS.store(t as usize, Ordering::Relaxed);
+}
+
+/// Make `t` the main thread's block (flint-glibc builds a new one once it knows every
+/// object's TLS).
+pub unsafe fn set_main_thread(t: *mut Thread) {
     MAIN_TLS.store(t as usize, Ordering::Relaxed);
 }
 

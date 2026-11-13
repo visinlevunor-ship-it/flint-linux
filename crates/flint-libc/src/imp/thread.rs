@@ -75,6 +75,13 @@ extern "C" {
 
 static THREADS: AtomicUsize = AtomicUsize::new(1);
 
+/// Called first when a thread exits (flint-glibc: C++ thread_local destructors, the
+/// thread's dynamic TLS blocks).
+pub static mut EXIT_HOOK: Option<unsafe fn(*mut Thread)> = None;
+/// Called in the parent for each new thread, before it starts (flint-glibc keeps a list of
+/// threads, to set up TLS for libraries opened later).
+pub static mut CREATE_HOOK: Option<unsafe fn(*mut Thread)> = None;
+
 #[no_mangle]
 pub unsafe extern "C" fn pthread_attr_init(a: *mut Attr) -> c_int {
     ptr::write_bytes(a as *mut u8, 0, core::mem::size_of::<Attr>());
@@ -191,6 +198,9 @@ pub unsafe extern "C" fn pthread_create(
     (*t).arg = arg;
     (*tls::current()).multiple_threads = 1;
     THREADS.fetch_add(1, Ordering::Relaxed);
+    if let Some(f) = CREATE_HOOK {
+        f(t);
+    }
     const FLAGS: usize = 0x100 /* VM */ | 0x200 /* FS */ | 0x400 /* FILES */ | 0x800 /* SIGHAND */
         | 0x10000 /* THREAD */ | 0x40000 /* SYSVSEM */ | 0x80000 /* SETTLS */
         | 0x100000 /* PARENT_SETTID */ | 0x200000 /* CHILD_CLEARTID */;
@@ -257,6 +267,9 @@ pub unsafe extern "C" fn pthread_detach(th: pthread_t) -> c_int {
 #[no_mangle]
 pub unsafe extern "C" fn pthread_exit(result: *mut c_void) -> ! {
     let t = tls::current();
+    if let Some(f) = EXIT_HOOK {
+        f(t);
+    }
     run_key_destructors(t);
     (*t).result = result;
     THREADS.fetch_sub(1, Ordering::Relaxed);

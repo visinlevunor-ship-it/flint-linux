@@ -5,6 +5,8 @@ use core::ptr;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 // The kernel enters at _start with the stack holding argc, argv[], NULL, envp[], NULL, auxv.
+// (Static programs only: flint-glibc's loader starts glibc programs.)
+#[cfg(not(feature = "glibc"))]
 core::arch::global_asm!(
     ".globl _start",
     ".type _start,@function",
@@ -29,6 +31,7 @@ core::arch::global_asm!(
 pub static AUXV: AtomicUsize = AtomicUsize::new(0);
 pub static PAGE_SIZE: AtomicUsize = AtomicUsize::new(4096);
 
+#[cfg(not(feature = "glibc"))]
 extern "C" {
     static __init_array_start: [unsafe extern "C" fn(i32, *mut *mut u8, *mut *mut u8); 0];
     static __init_array_end: [unsafe extern "C" fn(i32, *mut *mut u8, *mut *mut u8); 0];
@@ -42,6 +45,7 @@ pub const AT_PAGESZ: usize = 6;
 pub const AT_RANDOM: usize = 25;
 
 /// Everything before main: auxiliary vector, TLS, environment, constructors.
+#[cfg(not(feature = "glibc"))]
 unsafe extern "C" fn start_c(sp: *const usize) {
     let argc = *sp as i32;
     let argv = sp.add(1) as *mut *mut u8;
@@ -70,6 +74,7 @@ unsafe extern "C" fn start_c(sp: *const usize) {
     run_array(ptr::addr_of!(__init_array_start) as usize, ptr::addr_of!(__init_array_end) as usize, argc, argv, envp);
 }
 
+#[cfg(not(feature = "glibc"))]
 unsafe fn run_array(start: usize, end: usize, argc: i32, argv: *mut *mut u8, envp: *mut *mut u8) {
     let mut f = start;
     while f < end {
@@ -79,11 +84,16 @@ unsafe fn run_array(start: usize, end: usize, argc: i32, argv: *mut *mut u8, env
     }
 }
 
+#[cfg(not(feature = "glibc"))]
 const ATEXIT_MAX: usize = 32;
+#[cfg(not(feature = "glibc"))]
 static ATEXIT_LOCK: Lock = Lock::new();
+#[cfg(not(feature = "glibc"))]
 static mut ATEXIT: [Option<unsafe extern "C" fn()>; ATEXIT_MAX] = [None; ATEXIT_MAX];
+#[cfg(not(feature = "glibc"))]
 static mut ATEXIT_N: usize = 0;
 
+#[cfg(not(feature = "glibc"))]
 #[no_mangle]
 pub unsafe extern "C" fn atexit(f: unsafe extern "C" fn()) -> i32 {
     let _g = ATEXIT_LOCK.guard();
@@ -96,6 +106,7 @@ pub unsafe extern "C" fn atexit(f: unsafe extern "C" fn()) -> i32 {
     0
 }
 
+#[cfg(not(feature = "glibc"))]
 #[no_mangle]
 pub unsafe extern "C" fn exit(code: i32) -> ! {
     // handlers run in reverse order of registration

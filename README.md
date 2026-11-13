@@ -40,8 +40,10 @@ You need a 64-bit PC with UEFI, with **Secure Boot turned off**.
 
 ```sh
 rustup target add x86_64-unknown-linux-musl x86_64-unknown-uefi
+rustup component add rust-src
 cargo build --release --workspace --target x86_64-unknown-linux-musl
 (cd rt   && cargo build --release --target x86_64-unknown-linux-musl)
+rt/flint-glibc/build.sh rt/target/glibc    # the loader for programs built for glibc
 (cd boot && cargo build --release --target x86_64-unknown-uefi)
 cargo build --release -p flint-mkimage -p flint-pkg
 
@@ -107,6 +109,7 @@ To boot without saving anything to the stick, pick **live** in the boot menu.
 | **System** | `pkg` · `flint-install` · `flint-update` · `gzip` |
 | **Crypto** | SHA-2, HMAC, PBKDF2, AES-GCM (AES-NI), X25519, Ed25519, HKDF, TLS 1.3, all in pure Rust |
 | **C library** | `flint-libc`: start-up, malloc, files, threads, signals, processes, sockets, DNS, math, unwinder |
+| **glibc programs** | `flint-glibc`: a dynamic loader and `libc.so.6` in one, on flint-libc, so binaries built for glibc (Firefox) run |
 
 ## Status
 
@@ -118,8 +121,8 @@ Not there yet:
 - NVIDIA graphics beyond the basic framebuffer.
 - `sh` has no `trap`, aliases, `set -e`, arrays or `[[ ]]`.
 - Secure Boot.
-- Programs built for glibc (Java, Firefox, Steam…) don't run yet: flint-libc speaks musl's
-  ABI so far.
+- Programs built for glibc: Firefox runs; Java, Qt and GPU drivers are next. Missing
+  functions stop the program with a message naming them.
 
 ## Docs
 

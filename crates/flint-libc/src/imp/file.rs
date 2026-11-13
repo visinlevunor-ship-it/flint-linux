@@ -121,7 +121,7 @@ pub unsafe extern "C" fn getcwd(buf: *mut c_char, size: size_t) -> *mut c_char {
     }
     if buf.is_null() {
         let len = mem::cstrlen(b) + 1;
-        let out = malloc::malloc(len);
+        let out = malloc::umalloc(len);
         if out.is_null() {
             return ptr::null_mut();
         }
@@ -453,7 +453,7 @@ pub unsafe extern "C" fn realpath(path: *const c_char, resolved: *mut c_char) ->
         return ptr::null_mut();
     }
     let dst = if resolved.is_null() {
-        let m = malloc::malloc(out_len + 1);
+        let m = malloc::umalloc(out_len + 1);
         if m.is_null() {
             return ptr::null_mut();
         }

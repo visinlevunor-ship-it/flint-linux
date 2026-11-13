@@ -3,7 +3,10 @@
 # which would break the std crates in the main workspace.
 [workspace]
 resolver = "2"
-members = ["flint-rt", "flint-version"]
+members = ["flint-rt", "flint-version", "flint-glibc"]
+# flint-glibc needs its own flags (a shared object, C variadics): build it with
+# rt/flint-glibc/build.sh, not a plain `cargo build`
+default-members = ["flint-rt", "flint-version"]
 
 [profile.dev]
 panic = "abort"

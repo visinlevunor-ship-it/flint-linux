@@ -48,12 +48,14 @@ pub unsafe fn load_bias() -> usize {
 }
 
 /// A static program is one object: report it (the unwinder finds .eh_frame_hdr this way).
+/// (flint-glibc's loader has its own, for every loaded object.)
+#[cfg(not(feature = "glibc"))]
 #[no_mangle]
 pub unsafe extern "C" fn dl_iterate_phdr(
     cb: unsafe extern "C" fn(*mut DlPhdrInfo, size_t, *mut c_void) -> c_int,
     data: *mut c_void,
 ) -> c_int {
-    let tls_img = &*core::ptr::addr_of!(tls::IMAGE);
+    let tls_img = &(*core::ptr::addr_of!(tls::MODULES))[0];
     let main = tls::main_thread();
     let mut info = DlPhdrInfo {
         addr: load_bias(),
@@ -63,7 +65,7 @@ pub unsafe extern "C" fn dl_iterate_phdr(
         adds: 1,
         subs: 0,
         tls_modid: (tls_img.memsz > 0) as usize,
-        tls_data: if tls_img.memsz > 0 { (main as usize - tls::tls_offset()) as *mut c_void } else { core::ptr::null_mut() },
+        tls_data: if tls_img.memsz > 0 { (main as usize - tls_img.offset) as *mut c_void } else { core::ptr::null_mut() },
     };
     cb(&mut info, core::mem::size_of::<DlPhdrInfo>(), data)
 }

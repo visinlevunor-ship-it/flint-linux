@@ -129,7 +129,38 @@ link against flint-libc instead of musl, with no other change:
 
 Rust's own linker, `rust-lld`, links everything, so the build needs no C toolchain on Linux or
 FreeBSD. The thread control block uses glibc's layout (`%fs:0` self pointer, `%fs:0x28` stack
-guard), the first step toward running programs built for glibc.
+guard), which flint-glibc builds on.
+
+## Programs built for glibc: flint-glibc
+
+Most Linux software ships built for glibc: Firefox, Java, Steam. `flint-glibc`
+(`rt/flint-glibc`) runs it without glibc. It is one shared object, built on flint-libc, that
+is both the dynamic loader and the C library, installed where those programs look for their
+interpreter: `/lib64/ld-linux-x86-64.so.2`.
+
+- **Loader.** It relocates itself, maps the program's libraries (`RPATH`, `LD_LIBRARY_PATH`,
+  `RUNPATH`, then the usual directories), binds symbols with glibc's version rules, runs
+  constructors in dependency order, and provides `dlopen`, `dlsym` (with `RTLD_NEXT`),
+  `dladdr`, `dl_iterate_phdr` and thread-local storage (static, with room for libraries
+  opened later). It answers for `libc.so.6`, `libm.so.6`, `libpthread.so.0`, `libdl.so.2`,
+  `librt.so.1`, `libresolv.so.2` and the rest itself, whatever symbol version is asked for.
+- **glibc's ABI.** Structures programs see are laid out as glibc's: `FILE` (so the `getc`
+  macros work), mutexes and condition variables, `jmp_buf` and `ucontext_t`, `struct pthread`'s
+  thread id, the ctype tables, `regex_t`, `glob_t`, `FTS`. Variables a program copies
+  (`environ`, `optind`, `timezone`) are found and used in place.
+- **Interposition.** A program may bring its own `malloc` (Firefox does): flint-glibc uses it
+  for memory the program frees, and its own allocator for everything else.
+- **Coverage.** stdio and `printf`/`scanf` (checked against glibc's output), locales (C and
+  UTF-8), time zones (TZif files and POSIX rules), libm (exact or within about an ulp, checked
+  against glibc and against arbitrary precision), DNS and the resolver interface, `getifaddrs`
+  over netlink, users and groups, `getopt`, `glob`, `fnmatch`, POSIX regular expressions
+  (leftmost-longest), `fts`, `syslog`, `obstack`. A function it does not have yet stops the
+  program with `flint-glibc: NAME is not implemented yet`; `FLINT_LD_DEBUG=1` lists them all
+  at start.
+
+The libraries those programs need (GTK and the like) are packaged from Ubuntu's archive,
+pinned by checksum, and installed in `/usr/lib/x86_64-linux-gnu`, which Flint's own
+programs never use.
 
 `flint-rt` (in `rt/`) is smaller still: raw syscalls, `_start`, a heap and panics, for
 programs that need no C library at all.
@@ -166,7 +197,7 @@ crates/flint-web       DNS, TLS 1.3 client, HTTP downloads, fetch
 crates/flint-mkimage   host tool: initramfs, drivers, disk images
 crates/flint-libc      Flint's C library (replaces musl) and unwinder
 boot/                  flint-boot, the UEFI bootloader (separate workspace)
-rt/                    flint-rt and libc-free programs (separate workspace)
+rt/                    flint-rt, libc-free programs and flint-glibc (separate workspace)
 packages/              example package sources
 image/                 build scripts, boot menu, driver list, default /etc
 tests/                 pty and QEMU end-to-end tests

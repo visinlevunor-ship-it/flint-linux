@@ -15,13 +15,18 @@
 #![cfg_attr(not(test), no_std)]
 #![allow(clippy::missing_safety_doc)]
 #![allow(non_camel_case_types)]
+// built for flint-glibc, some of the static-program machinery goes unused
+#![cfg_attr(feature = "glibc", allow(unused))]
 
 /// The math functions, also tested on the build host against its libm.
 #[allow(dead_code)]
-mod math;
+#[doc(hidden)]
+pub mod math;
 
+// public for flint-glibc (rt/flint-glibc), which builds the glibc ABI on these pieces
 #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "musl"))]
-mod imp {
+#[doc(hidden)]
+pub mod imp {
     pub mod sys;
     pub mod types;
     pub mod errno;
@@ -41,7 +46,11 @@ mod imp {
     pub mod time;
     pub mod misc;
     pub mod strerror;
+    // flint-glibc exports its own libm
+    #[cfg(not(feature = "glibc"))]
     pub mod math;
+    // glibc programs bring libgcc_s, which has the unwinder
+    #[cfg(not(feature = "glibc"))]
     pub mod unwind;
     pub mod resolve;
     pub mod pwd;

@@ -8,6 +8,9 @@ use core::ptr;
 
 #[no_mangle]
 pub unsafe extern "C" fn fork() -> pid_t {
+    if let Some(f) = FORK_HOOKS.0 {
+        f();
+    }
     // hold the heap lock across fork so the child gets a consistent heap
     let r = {
         crate::imp::malloc::lock_for_fork();
@@ -18,8 +21,17 @@ pub unsafe extern "C" fn fork() -> pid_t {
     if r == 0 {
         thread::after_fork();
     }
+    if r >= 0 {
+        let h = if r == 0 { FORK_HOOKS.2 } else { FORK_HOOKS.1 };
+        if let Some(f) = h {
+            f();
+        }
+    }
     ret_i(r)
 }
+
+/// Called around fork (prepare, parent, child): flint-glibc runs pthread_atfork handlers.
+pub static mut FORK_HOOKS: (Option<unsafe fn()>, Option<unsafe fn()>, Option<unsafe fn()>) = (None, None, None);
 
 #[no_mangle]
 pub unsafe extern "C" fn execve(path: *const c_char, argv: *const *const c_char, envp: *const *const c_char) -> c_int {
@@ -89,12 +101,12 @@ unsafe fn exec_script(path: *const c_char, argv: *const *const c_char, envp: *co
 
 #[no_mangle]
 pub unsafe extern "C" fn execvp(file: *const c_char, argv: *const *const c_char) -> c_int {
-    exec_search(file, argv, env::environ as *const *const c_char)
+    exec_search(file, argv, *env::CELL as *const *const c_char)
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn execv(path: *const c_char, argv: *const *const c_char) -> c_int {
-    execve(path, argv, env::environ as *const *const c_char)
+    execve(path, argv, *env::CELL as *const *const c_char)
 }
 
 #[no_mangle]

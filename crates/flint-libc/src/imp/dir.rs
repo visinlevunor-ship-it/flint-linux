@@ -1,4 +1,4 @@
-//! opendir, fdopendir, readdir, closedir, dirfd.
+//! opendir, fdopendir, readdir, closedir, dirfd, rewinddir, telldir, seekdir.
 
 use crate::imp::sys::{self, ret, sc2, sc3, sc4};
 use crate::imp::types::*;
@@ -12,6 +12,8 @@ pub struct Dir {
     fd: c_int,
     pos: usize,
     end: usize,
+    /// The directory offset after the entry readdir returned last (its d_off).
+    last_off: i64,
     buf: [u8; BUF],
 }
 
@@ -37,6 +39,7 @@ pub unsafe extern "C" fn fdopendir(fd: c_int) -> *mut Dir {
     (*d).fd = fd;
     (*d).pos = 0;
     (*d).end = 0;
+    (*d).last_off = 0;
     sc3(sys::FCNTL, fd as isize as usize, 2 /* F_SETFD */, 1 /* FD_CLOEXEC */);
     d
 }
@@ -71,6 +74,7 @@ pub unsafe extern "C" fn readdir(d: *mut Dir) -> *mut c_void {
     // linux_dirent64 { u64 ino; i64 off; u16 reclen; u8 type; char name[]; } is musl's dirent
     let e = d.buf.as_mut_ptr().add(d.pos);
     let reclen = ptr::read_unaligned(e.add(16) as *const u16) as usize;
+    d.last_off = ptr::read_unaligned(e.add(8) as *const i64);
     d.pos += reclen;
     e as *mut c_void
 }
@@ -92,4 +96,18 @@ pub unsafe extern "C" fn rewinddir(d: *mut Dir) {
     sys::sc3(sys::LSEEK, (*d).fd as isize as usize, 0, 0);
     (*d).pos = 0;
     (*d).end = 0;
+    (*d).last_off = 0;
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn telldir(d: *mut Dir) -> c_long {
+    (*d).last_off
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn seekdir(d: *mut Dir, off: c_long) {
+    sys::sc3(sys::LSEEK, (*d).fd as isize as usize, off as usize, 0);
+    (*d).pos = 0;
+    (*d).end = 0;
+    (*d).last_off = off;
 }

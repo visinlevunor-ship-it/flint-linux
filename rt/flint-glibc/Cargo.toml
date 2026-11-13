@@ -1,0 +1,12 @@
+[package]
+name = "flint-glibc"
+version = "0.1.0"
+edition = "2021"
+description = "glibc's ABI on flint-libc: a dynamic loader and libc.so.6 in one object, so programs built for glibc run on Flint"
+
+[lib]
+crate-type = ["staticlib"]
+path = "src/lib.rs"
+
+[dependencies]
+flint-libc = { path = "../../crates/flint-libc", features = ["glibc"] }

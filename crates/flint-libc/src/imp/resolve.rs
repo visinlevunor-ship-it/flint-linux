@@ -38,7 +38,7 @@ pub struct AddrInfo {
 }
 
 #[derive(Clone, Copy)]
-enum Ip {
+pub enum Ip {
     V4([u8; 4]),
     V6([u8; 16]),
 }
@@ -131,7 +131,7 @@ fn parse_v6(s: &[u8]) -> Option<[u8; 16]> {
     Some(out)
 }
 
-fn parse_ip(s: &[u8]) -> Option<Ip> {
+pub fn parse_ip(s: &[u8]) -> Option<Ip> {
     parse_v4(s).map(Ip::V4).or_else(|| parse_v6(s).map(Ip::V6))
 }
 
@@ -159,7 +159,7 @@ fn service_port(s: &[u8], numeric_only: bool) -> Option<u16> {
 }
 
 /// Read a small file into `buf`; returns the bytes read.
-unsafe fn read_file(path: &[u8], buf: &mut [u8]) -> usize {
+pub unsafe fn read_file(path: &[u8], buf: &mut [u8]) -> usize {
     let fd = sc3(sys::OPEN, path.as_ptr() as usize, 0o2000000, 0);
     if fd < 0 {
         return 0;
@@ -363,6 +363,60 @@ unsafe fn dns(name: &[u8], qtype: u16, out: &mut [Ip; 16], n: &mut usize) -> Res
         }
     }
     Err(EAI_AGAIN)
+}
+
+/// Send a prepared query (its first two bytes are the id) to the nameservers and copy the
+/// first matching response into `ans`. Returns its length, or -1 when no server answered.
+/// For glibc's res_query family, which hands the raw message to the caller.
+pub unsafe fn exchange(q: &[u8], ans: &mut [u8]) -> isize {
+    let mut servers = [Ip::V4([0; 4]); 3];
+    let ns = nameservers(&mut servers);
+    if q.len() < 12 {
+        return -1;
+    }
+    for _attempt in 0..2 {
+        for s in servers.iter().take(ns) {
+            let (fam, sa, salen) = sockaddr(*s, 53);
+            let fd = sc3(sys::SOCKET, fam as usize, SOCK_DGRAM as usize | 0o2000000, 0);
+            if fd < 0 {
+                continue;
+            }
+            let fd = fd as usize;
+            if sc3(sys::CONNECT, fd, sa.as_ptr() as usize, salen as usize) < 0
+                || sc3(sys::WRITE, fd, q.as_ptr() as usize, q.len()) < 0
+            {
+                sc1(sys::CLOSE, fd);
+                continue;
+            }
+            let deadline = now_ms() + 2500;
+            let got = loop {
+                let left = deadline - now_ms();
+                if left <= 0 {
+                    break -1;
+                }
+                let mut pfd = [fd as i32, 1 /* POLLIN */, 0];
+                let r = sc3(sys::POLL, pfd.as_mut_ptr() as usize, 1, left as usize);
+                if r <= 0 {
+                    if r == -4 {
+                        continue;
+                    }
+                    break -1;
+                }
+                let got = sc6(sys::RECVFROM, fd, ans.as_mut_ptr() as usize, ans.len(), 0, 0, 0);
+                if got <= 0 {
+                    break -1;
+                }
+                if got >= 12 && ans[0] == q[0] && ans[1] == q[1] && ans[2] & 0x80 != 0 {
+                    break got;
+                }
+            };
+            sc1(sys::CLOSE, fd);
+            if got > 0 {
+                return got;
+            }
+        }
+    }
+    -1
 }
 
 /// A sockaddr_in or sockaddr_in6 for `ip`:`port`.

@@ -210,8 +210,9 @@ unsafe fn usable(p: *mut u8) -> usize {
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn malloc(n: usize) -> *mut u8 {
+/// malloc for the C library's own use: never interposed by a program's malloc (flint-glibc's
+/// loader keeps its data here; the program's own allocator may not be ready yet).
+pub unsafe fn imalloc(n: usize) -> *mut u8 {
     let p = if n <= MAX_SMALL {
         let _g = LOCK.guard();
         alloc_small(class_of(n))
@@ -225,7 +226,25 @@ pub unsafe extern "C" fn malloc(n: usize) -> *mut u8 {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn malloc(n: usize) -> *mut u8 {
+    imalloc(n)
+}
+
+/// The malloc a program frees with `free`: for memory the C library hands out (getcwd(NULL),
+/// realpath). A glibc program may bring its own allocator (Firefox does); flint-glibc's
+/// loader points this at whichever malloc the program uses.
+pub static mut USER_MALLOC: unsafe extern "C" fn(usize) -> *mut u8 = malloc;
+
+pub unsafe fn umalloc(n: usize) -> *mut u8 {
+    USER_MALLOC(n)
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn free(p: *mut u8) {
+    ifree(p)
+}
+
+pub unsafe fn ifree(p: *mut u8) {
     if p.is_null() {
         return;
     }
@@ -244,11 +263,15 @@ pub unsafe extern "C" fn free(p: *mut u8) {
 
 #[no_mangle]
 pub unsafe extern "C" fn calloc(n: usize, size: usize) -> *mut u8 {
+    icalloc(n, size)
+}
+
+pub unsafe fn icalloc(n: usize, size: usize) -> *mut u8 {
     let Some(total) = n.checked_mul(size) else {
         errno::set(errno::ENOMEM);
         return ptr::null_mut();
     };
-    let p = malloc(total);
+    let p = imalloc(total);
     if !p.is_null() && total <= MAX_SMALL {
         // large blocks are fresh mappings, already zero
         ptr::write_bytes(p, 0, total);
@@ -258,8 +281,12 @@ pub unsafe extern "C" fn calloc(n: usize, size: usize) -> *mut u8 {
 
 #[no_mangle]
 pub unsafe extern "C" fn realloc(p: *mut u8, n: usize) -> *mut u8 {
+    irealloc(p, n)
+}
+
+pub unsafe fn irealloc(p: *mut u8, n: usize) -> *mut u8 {
     if p.is_null() {
-        return malloc(n);
+        return imalloc(n);
     }
     // realloc(p, 0) shrinks to an empty block and returns it, as musl does: programs check
     // for NULL to mean out of memory (Xorg's reallocarray of zero elements, say)
@@ -269,12 +296,12 @@ pub unsafe extern "C" fn realloc(p: *mut u8, n: usize) -> *mut u8 {
     if n <= have && ((*s).kind == KIND_LARGE && n > MAX_SMALL || n * 2 > have || have <= 16) {
         return p;
     }
-    let q = malloc(n);
+    let q = imalloc(n);
     if q.is_null() {
         return q;
     }
     ptr::copy_nonoverlapping(p, q, have.min(n));
-    free(p);
+    ifree(p);
     q
 }
 
@@ -284,12 +311,12 @@ pub unsafe extern "C" fn posix_memalign(out: *mut *mut u8, align: usize, n: usiz
         return errno::EINVAL;
     }
     let p = if align <= 16 {
-        malloc(n)
+        imalloc(n)
     } else if align > SPAN / 2 {
         ptr::null_mut()
     } else if n + align <= MAX_SMALL {
         // a block big enough to hold an aligned run of n bytes; free() finds its start
-        let b = malloc(n + align);
+        let b = imalloc(n + align);
         if b.is_null() {
             b
         } else {
