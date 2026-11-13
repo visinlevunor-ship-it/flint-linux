@@ -128,6 +128,7 @@ pub const SYMLINK: usize = 88;
 pub const READLINK: usize = 89;
 pub const CHMOD: usize = 90;
 pub const FCHMOD: usize = 91;
+pub const CHOWN: usize = 92;
 pub const FCHOWN: usize = 93;
 pub const LCHOWN: usize = 94;
 pub const UMASK: usize = 95;

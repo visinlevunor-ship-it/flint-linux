@@ -1,6 +1,8 @@
 //! Hardware support: `modload` (load drivers, by name or for every present device),
-//! `devd` (load drivers for devices that appear later) and `lsmod`.
+//! `devd` (load drivers for devices that appear later, give graphics and input devices to
+//! their groups) and `lsmod`.
 
+pub mod access;
 pub mod bootpart;
 pub mod index;
 pub mod loader;
@@ -18,6 +20,7 @@ use loader::{coldplug, read_blacklist, Loader};
 pub use bootpart::mountboot;
 
 const BLACKLIST: &str = "/etc/flint/modules.blacklist";
+const GROUPS: &str = "/etc/group";
 
 const MODLOAD_USAGE: &str = "usage: modload MODULE [PARAM=VALUE...]   load a module and what it needs
        modload -r MODULE...                   unload modules
@@ -192,7 +195,8 @@ pub fn modprobe(args: Vec<String>) -> i32 {
     i32::from(!ok)
 }
 
-/// `devd`: load drivers for devices as they appear. Meant to run as a service.
+/// `devd`: load drivers for devices as they appear, and let the `video` and `input` groups
+/// open graphics cards and input devices (see [`access`]). Meant to run as a service.
 pub fn devd(args: Vec<String>) -> i32 {
     let verbose = args.iter().skip(1).any(|a| a == "-v");
     let sock = match uevent::Socket::open() {
@@ -207,6 +211,8 @@ pub fn devd(args: Vec<String>) -> i32 {
     l.blacklist = read_blacklist(Path::new(BLACKLIST));
     // Catch up with anything that appeared before the socket was open.
     coldplug(&mut l, Path::new("/sys/devices"), Duration::from_millis(500), Duration::from_secs(5));
+    let groups = fs::read_to_string(GROUPS).unwrap_or_default();
+    access::apply_all(Path::new("/dev"), &groups);
     loop {
         let ev = match sock.recv() {
             Ok(ev) => ev,
@@ -218,6 +224,15 @@ pub fn devd(args: Vec<String>) -> i32 {
         };
         if ev.get("ACTION").map(String::as_str) != Some("add") {
             continue;
+        }
+        if let Some(name) = ev.get("DEVNAME").filter(|n| access::rule_for(n).is_some()) {
+            // read each time: groups may have been edited since devd started
+            let groups = fs::read_to_string(GROUPS).unwrap_or_default();
+            if let Err(e) = access::apply(Path::new("/dev"), name, &groups) {
+                if verbose {
+                    eprintln!("devd: /dev/{name}: {e}");
+                }
+            }
         }
         if let Some(alias) = ev.get("MODALIAS") {
             let before = l.loaded.len();

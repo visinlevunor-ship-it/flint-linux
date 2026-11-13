@@ -2,3 +2,5 @@ root:x:0:
 tty:x:5:flint
 users:x:100:flint
 flint:x:1000:
+video:x:44:flint
+input:x:105:flint

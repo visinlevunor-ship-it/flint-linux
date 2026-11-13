@@ -151,6 +151,10 @@ pub unsafe extern "C" fn fchmodat(dir: c_int, path: *const c_char, mode: mode_t,
     ret_i(sc3(sys::FCHMODAT, dir as isize as usize, path as usize, mode as usize))
 }
 #[no_mangle]
+pub unsafe extern "C" fn chown(path: *const c_char, uid: uid_t, gid: gid_t) -> c_int {
+    ret_i(sc3(sys::CHOWN, path as usize, uid as usize, gid as usize))
+}
+#[no_mangle]
 pub unsafe extern "C" fn fchown(fd: c_int, uid: uid_t, gid: gid_t) -> c_int {
     ret_i(sc3(sys::FCHOWN, fd as isize as usize, uid as usize, gid as usize))
 }

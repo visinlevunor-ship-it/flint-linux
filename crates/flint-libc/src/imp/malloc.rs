@@ -261,10 +261,8 @@ pub unsafe extern "C" fn realloc(p: *mut u8, n: usize) -> *mut u8 {
     if p.is_null() {
         return malloc(n);
     }
-    if n == 0 {
-        free(p);
-        return ptr::null_mut();
-    }
+    // realloc(p, 0) shrinks to an empty block and returns it, as musl does: programs check
+    // for NULL to mean out of memory (Xorg's reallocarray of zero elements, say)
     let have = usable(p);
     let s = span_of(p);
     // stays in place when it still fits and does not waste more than half the block
@@ -336,5 +334,34 @@ pub fn unlock_after_fork(child: bool) {
         LOCK.reset();
     } else {
         LOCK.unlock();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn realloc_keeps_contents_and_handles_zero() {
+        unsafe {
+            let p = malloc(40);
+            assert!(!p.is_null());
+            for i in 0..40 {
+                *p.add(i) = i as u8;
+            }
+            let q = realloc(p, 20_000); // small to large
+            assert!(!q.is_null());
+            assert!((0..40).all(|i| *q.add(i) == i as u8));
+            let r = realloc(q, 10); // large to small
+            assert!((0..10).all(|i| *r.add(i) == i as u8));
+            // zero bytes: a valid (empty) block, not NULL, which callers take for no memory
+            let z = realloc(r, 0);
+            assert!(!z.is_null());
+            free(z);
+            let big = malloc(100_000);
+            let z = realloc(big, 0);
+            assert!(!z.is_null());
+            free(z);
+        }
     }
 }
