@@ -35,11 +35,12 @@ per program is installed:
 ```sh
 pkg config                     # every program's configurations (* = installed)
 pkg config dwm                 # just dwm's
-pkg config install dwm-flint   # use dwm-flint (whatever dwm configuration was there goes)
-pkg config remove dwm-flint
+pkg config install dwm-1       # use dwm configuration 1 (whatever dwm configuration was there goes)
+pkg config remove dwm-1        # back to no window manager
 ```
 
-To publish one, give its package `config-of: dwm` in the control file and the same files
+Configurations are numbered: `dwm-1`, `dwm-2`... (`dwm` itself is the program as upstream
+ships it). To publish one, give its package `config-of: dwm` in the control file and the same files
 as the other configurations of dwm (`/usr/bin/dwm` here); `pkg config install` swaps them.
 
 ## Making packages
