@@ -2,7 +2,7 @@
 # Build the base system packages that flint-update installs: flint-system (base image
 # and bootloader), flint-kernel (the kernel and its drivers), flint-firmware and
 # flint-gpu-firmware. The same files as on the boot partition of target/flint.img. Big ones
-# are split into NAME-1, NAME-2, ... parts (under GitHub's file size limits); NAME depends
+# are split into NAME-part1, NAME-part2, ... parts (under GitHub's file size limits); NAME depends
 # on its parts, so flint-update installs them all.
 #
 #   image/build-system-packages.sh REPO_DIR
@@ -75,7 +75,7 @@ units() {
 }
 
 # stage_split NAME VERSION DESCRIPTION DIR [FILE...]: DIR (copied into usr/lib/flint/system)
-# goes into NAME-1, NAME-2, ... and NAME itself holds the FILEs and depends on the parts,
+# goes into NAME-part1, NAME-part2, ... and NAME itself holds the FILEs and depends on the parts,
 # so installing or upgrading NAME brings them all.
 stage_split() {
     name=$1 version=$2 desc=$3 dir=$4
@@ -88,21 +88,21 @@ stage_split() {
         if [ "$n" -eq 0 ] || [ $((used + kib)) -gt "$PART_KIB" ]; then
             n=$((n + 1))
             used=0
-            deps="${deps:+$deps, }$name-$n=$version"
-            mkdir -p "$WORK/$name-$n/files/usr/lib/flint/system"
-            printf 'name: %s\nversion: %s\ndescription: %s (part %s)\narch: x86_64\n' "$name-$n" "$version" "$desc" "$n" \
-                > "$WORK/$name-$n/control"
+            deps="${deps:+$deps, }$name-part$n=$version"
+            mkdir -p "$WORK/$name-part$n/files/usr/lib/flint/system"
+            printf 'name: %s\nversion: %s\ndescription: %s (part %s)\narch: x86_64\n' "$name-part$n" "$version" "$desc" "$n" \
+                > "$WORK/$name-part$n/control"
         fi
         used=$((used + kib))
-        dst="$WORK/$name-$n/files/usr/lib/flint/system/$rel"
+        dst="$WORK/$name-part$n/files/usr/lib/flint/system/$rel"
         mkdir -p "$(dirname "$dst")"
         cp -R "$base/$rel" "$dst"
     done < "$WORK/$name.units"
     i=1
     while [ "$i" -le "$n" ]; do
-        find "$WORK/$name-$i/files" -type f -exec chmod 644 {} +
-        find "$WORK/$name-$i/files" -type d -exec chmod 755 {} +
-        "$HOSTBIN/pkg" build "$WORK/$name-$i" "$REPO"
+        find "$WORK/$name-part$i/files" -type f -exec chmod 644 {} +
+        find "$WORK/$name-part$i/files" -type d -exec chmod 755 {} +
+        "$HOSTBIN/pkg" build "$WORK/$name-part$i" "$REPO"
         i=$((i + 1))
     done
     # the package with the name flint-update asks for: the remaining files, and the parts

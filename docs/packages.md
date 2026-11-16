@@ -78,7 +78,7 @@ pkg sign repo/x86_64/ ~/keys/flint.key       # sign again after every index
 The rest comes from the build machine:
 
 ```sh
-image/build-system-packages.sh repo/x86_64/                              # base system, for flint-update
+image/build-system-packages.sh repo/x86_64/                              # base system, for flint-update (every release)
 FLINT=$PWD ../flint-packages/ports/kernels/build.sh zen /tmp/zen     # zen, lts, upstream
 pkg build /tmp/zen repo/x86_64/
 ```

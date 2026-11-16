@@ -44,6 +44,19 @@ shell without logging in, build with `SERVICES=image/etc/flint/services.qemu-she
 
 Every release was also checked in QEMU with OVMF.
 
+**1.1** (flint-glibc):
+- `flint-update` from a Flint 1.0 image to 1.1 over a signed repository: the base system,
+  kernel, drivers and firmware installed as packages, the new base image on the boot
+  partition, and after a reboot Flint 1.1 with `/lib64/ld-linux-x86-64.so.2`
+- flint-glibc against glibc, program by program: stdio, `printf` and `scanf`, netdb,
+  `getopt`, `qsort`, `random`, `glob`, `fnmatch`, POSIX regex, `fts`, `setjmp`, `ucontext`
+  (same output); libm against arbitrary precision (no function worse than glibc's by more
+  than half an ulp on the test inputs)
+- Ubuntu's binaries run by flint-glibc: Firefox 136 rendering pages (sandboxed content
+  processes, JavaScript, canvas), OpenJDK 21 (threads, GC, exceptions, stack overflow,
+  child processes), Mesa's OpenGL 4.5 on llvmpipe through Ubuntu's X server (GLX),
+  Prism Launcher 11.1.1 (Qt 6)
+
 **1.0** (everything on flint-libc, no musl):
 - the whole workspace test suite built for `x86_64-unknown-linux-musl` and linked against
   flint-libc: 294 tests, including the end-to-end ones that run the real `pkg`, `sh` and tools

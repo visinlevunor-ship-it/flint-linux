@@ -8,7 +8,7 @@ The kernel is Linux. Everything else (bootloader, init, shell, core tools,
 package manager, networking, TLS, installer) is Flint's own code.
 
 [![Patreon](https://img.shields.io/badge/Patreon-support%20Flint-f96854?logo=patreon&logoColor=white)](https://www.patreon.com/c/FlintLinux/membership)
-![version](https://img.shields.io/badge/version-1.0-orange)
+![version](https://img.shields.io/badge/version-1.1-orange)
 ![status](https://img.shields.io/badge/status-early%20development-yellow)
 
 </div>
@@ -113,7 +113,7 @@ To boot without saving anything to the stick, pick **live** in the boot menu.
 
 ## Status
 
-**1.0, early development.** Flint is tested in QEMU, and reports from real hardware are very welcome.
+**1.1, early development.** Flint is tested in QEMU, and reports from real hardware are very welcome.
 
 Not there yet:
 - WPA3-only and enterprise Wi-Fi.
