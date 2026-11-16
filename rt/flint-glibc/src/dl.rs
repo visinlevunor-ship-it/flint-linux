@@ -142,11 +142,16 @@ pub unsafe extern "C" fn dlopen(file: *const c_char, mode: c_int) -> *mut c_void
             return ptr::null_mut();
         }
     };
+    let mut fresh_tls = Vec::new();
     for &d in &order {
+        let had = (*d).tls_id != 0;
         if let Err(e) = loader::assign_tls(d) {
             let msg = alloc::format!("{}: {}", (*d).display(), e);
             set_error(msg.as_bytes());
             return ptr::null_mut();
+        }
+        if !had && (*d).tls_id != 0 {
+            fresh_tls.push(d);
         }
     }
     let s = st();
@@ -168,6 +173,10 @@ pub unsafe extern "C" fn dlopen(file: *const c_char, mode: c_int) -> *mut c_void
                 return ptr::null_mut();
             }
         }
+    }
+    // the TLS images are relocated now; running threads get the new blocks
+    for &d in &fresh_tls {
+        loader::copy_tls_to_threads(d);
     }
     let mut out = Vec::new();
     let mut seen = Vec::new();

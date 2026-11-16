@@ -22,6 +22,7 @@ pub mod jmp;
 pub mod pattern;
 pub mod regex;
 pub mod fts;
+pub mod extra;
 
 use crate::fl;
 use crate::loader::{self, Dso};

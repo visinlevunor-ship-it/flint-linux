@@ -896,17 +896,24 @@ pub unsafe fn assign_tls(d: *mut Dso) -> Result<(), &'static str> {
     }
     (*d).tls_id = id;
     (*d).tls_offset = off;
-    if started {
-        // every running thread gets its copy of the new block
-        for &t in &st().threads {
-            let block = t - off;
-            if filesz > 0 {
-                ptr::copy_nonoverlapping(img as *const u8, block as *mut u8, filesz);
-            }
-            ptr::write_bytes((block + filesz) as *mut u8, 0, memsz - filesz);
-        }
-    }
     Ok(())
+}
+
+/// Copy a library's (relocated) TLS image into every running thread. Call it after
+/// relocation: the image may hold relocated pointers (Mesa's TLS context does).
+pub unsafe fn copy_tls_to_threads(d: *mut Dso) {
+    let (img, filesz, memsz, _align) = (*d).tls_image;
+    if memsz == 0 || (*d).tls_id == 0 {
+        return;
+    }
+    let off = (*d).tls_offset;
+    for &t in &st().threads {
+        let block = t - off;
+        if filesz > 0 {
+            ptr::copy_nonoverlapping(img as *const u8, block as *mut u8, filesz);
+        }
+        ptr::write_bytes((block + filesz) as *mut u8, 0, memsz - filesz);
+    }
 }
 
 /// Relocate one object against `scope`.
@@ -1181,10 +1188,11 @@ pub unsafe extern "C" fn start(sp: *mut usize) -> StartResult {
     }
     let auxv = p.add(1) as *mut usize;
     let mut a = auxv;
-    let (mut at_phdr, mut at_phnum, mut at_entry, mut random) = (0, 0, 0, 0);
+    let (mut at_phdr, mut at_phnum, mut at_entry, mut random, mut at_execfn) = (0, 0, 0, 0, 0usize);
     while *a != 0 {
         match *a {
             AT_PHDR => at_phdr = *a.add(1),
+            AT_EXECFN => at_execfn = *a.add(1),
             AT_PHNUM => at_phnum = *a.add(1),
             AT_ENTRY => at_entry = *a.add(1),
             AT_RANDOM => random = *a.add(1),
@@ -1288,6 +1296,21 @@ pub unsafe extern "C" fn start(sp: *mut usize) -> StartResult {
     } else {
         let mut d = Dso::new();
         d.phdr = at_phdr;
+        // the program's path, for $ORIGIN in its RPATH: the kernel's AT_EXECFN when it is
+        // absolute, else /proc/self/exe
+        let mut path: Vec<u8> = Vec::new();
+        if at_execfn != 0 && *(at_execfn as *const u8) == b'/' {
+            path.extend_from_slice(fl::mem::cstr(at_execfn as *const u8));
+        } else {
+            let mut buf = [0u8; 4096];
+            let n = fl::sys::sc4(89 /* readlink */, b"/proc/self/exe\0".as_ptr() as usize, buf.as_mut_ptr() as usize, 4095, 0);
+            if n > 0 {
+                path.extend_from_slice(&buf[..n as usize]);
+            } else if at_execfn != 0 {
+                path.extend_from_slice(fl::mem::cstr(at_execfn as *const u8));
+            }
+        }
+        path.push(0);
         d.phnum = at_phnum;
         for i in 0..at_phnum {
             let ph = &*((at_phdr + i * 56) as *const Phdr);
@@ -1295,7 +1318,7 @@ pub unsafe extern "C" fn start(sp: *mut usize) -> StartResult {
                 d.base = at_phdr - ph.p_vaddr as usize;
             }
         }
-        d.path = b"\0".to_vec();
+        d.path = path;
         scan_phdrs(&mut d);
         parse_dynamic(&mut d);
         d.l_name = d.path.as_ptr();

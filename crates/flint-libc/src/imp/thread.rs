@@ -27,7 +27,11 @@ pub struct Attr {
     _pad: [u8; 28],
 }
 
+#[cfg(not(feature = "glibc"))]
 const DEFAULT_STACK: usize = 2 * 1024 * 1024;
+/// glibc's default: programs built for it expect deep stacks (8 MiB, the usual RLIMIT_STACK).
+#[cfg(feature = "glibc")]
+const DEFAULT_STACK: usize = 8 * 1024 * 1024;
 const STACK_MIN: usize = 16 * 1024;
 
 core::arch::global_asm!(

@@ -209,6 +209,34 @@ pub unsafe extern "C" fn sysconf(name: c_int) -> c_long {
             (bytes / start::PAGE_SIZE.load(Ordering::Relaxed) as u64) as c_long
         }
         180 => 64, // _SC_HOST_NAME_MAX
+        5 => 16,                                // _SC_STREAM_MAX
+        6 => 6,                                 // _SC_TZNAME_MAX
+        7 | 8 => 1,                             // _SC_JOB_CONTROL, _SC_SAVED_IDS
+        // POSIX options this system has (as glibc reports them)
+        9..=22 | 29 | 46 | 68 | 77..=82 | 133 | 137..=139 | 149 | 153 | 154 | 164 | 235 | 236 => 200_809,
+        25 => 20,                               // _SC_AIO_PRIO_DELTA_MAX
+        26 | 33 | 87 => i32::MAX as c_long,     // DELAYTIMER_MAX, SEM_VALUE_MAX, ATEXIT_MAX
+        28 => 32_768,                           // _SC_MQ_PRIO_MAX
+        31 => 32,                               // _SC_RTSIG_MAX
+        34 => rlimit(11),                       // _SC_SIGQUEUE_MAX (RLIMIT_SIGPENDING)
+        36 | 38 => 99,                          // _SC_BC_BASE_MAX, _SC_BC_SCALE_MAX
+        37 => 2_048,                            // _SC_BC_DIM_MAX
+        39 => 1_000,                            // _SC_BC_STRING_MAX
+        40 => 255,                              // _SC_COLL_WEIGHTS_MAX
+        42 => 32,                               // _SC_EXPR_NEST_MAX
+        43 | 45 => 2_048,                       // _SC_LINE_MAX, _SC_CHARCLASS_NAME_MAX
+        44 => 32_767,                           // _SC_RE_DUP_MAX
+        60 => 1_024,                            // _SC_IOV_MAX
+        71 => 256,                              // _SC_LOGIN_NAME_MAX
+        72 => 32,                               // _SC_TTY_NAME_MAX
+        73 => 4,                                // _SC_THREAD_DESTRUCTOR_ITERATIONS
+        74 => 1_024,                            // _SC_THREAD_KEYS_MAX
+        75 => 16_384,                           // _SC_THREAD_STACK_MIN
+        89 => 700,                              // _SC_XOPEN_VERSION
+        // cache geometry: line sizes; sizes and ways unknown (0, as glibc says when it can't tell)
+        187 | 190 | 193 | 196 | 199 => 64,
+        185 | 186 | 188 | 189 | 191 | 192 | 194 | 195 | 197 | 198 => 0,
+        23 | 24 | 27 | 32 | 35 | 76 | 173 => -1, // no fixed limit (errno untouched)
         _ => {
             errno::set(errno::EINVAL);
             -1

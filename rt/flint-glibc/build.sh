@@ -76,7 +76,10 @@ $lld -shared -o "$out/ld-flint.so" \
     --defsym=res_ninit=__res_ninit --defsym=res_init=__res_init --defsym=res_nclose=__res_nclose \
     --defsym=res_close=__res_close --defsym=res_nquery=__res_nquery --defsym=res_nsearch=__res_nsearch \
     --defsym=res_query=__res_query --defsym=res_search=__res_search \
-    --defsym=dn_expand=__dn_expand --defsym=dn_skipname=__dn_skipname \
+    --defsym=dn_expand=__dn_expand --defsym=res_nmkquery=__res_nmkquery \
+    --defsym=res_nsend=__res_nsend --defsym=res_send=__res_send --defsym=res_mkquery=__res_nmkquery \
+    --defsym=dn_skipname=__dn_skipname \
+    --defsym=__sysconf=sysconf --defsym=__getpagesize=getpagesize --defsym=sendfile64=sendfile \
     --defsym=timezone=__timezone --defsym=daylight=__daylight --defsym=tzname=__tzname \
     --whole-archive "$lib" --no-whole-archive
 rm -rf "$out/flint-glibc.map" "$work"

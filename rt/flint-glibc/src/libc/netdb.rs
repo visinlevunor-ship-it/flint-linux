@@ -1532,3 +1532,122 @@ pub unsafe extern "C" fn ns_get16(p: *const u8) -> u32 {
 pub unsafe extern "C" fn ns_get32(p: *const u8) -> u64 {
     u32::from_be_bytes([*p, *p.add(1), *p.add(2), *p.add(3)]) as u64
 }
+
+/// Build a query message (RES_NMKQUERY). Only QUERY (op 0) is made; data adds no record.
+#[no_mangle]
+pub unsafe extern "C" fn __res_nmkquery(
+    _st: *mut ResState,
+    op: c_int,
+    dname: *const c_char,
+    class: c_int,
+    ty: c_int,
+    _data: *const u8,
+    _datalen: c_int,
+    _newrr: *const u8,
+    buf: *mut u8,
+    buflen: c_int,
+) -> c_int {
+    if op != 0 || buf.is_null() {
+        return -1;
+    }
+    let mut q: Vec<u8> = Vec::with_capacity(300);
+    let mut id = [0u8; 2];
+    fl::sys::sc3(318 /* getrandom */, id.as_mut_ptr() as usize, 2, 0);
+    q.extend_from_slice(&[id[0], id[1], 1, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
+    for label in fl::mem::cstr(dname).split(|&c| c == b'.').filter(|l| !l.is_empty()) {
+        if label.len() > 63 {
+            return -1;
+        }
+        q.push(label.len() as u8);
+        q.extend_from_slice(label);
+    }
+    q.push(0);
+    q.extend_from_slice(&(ty as u16).to_be_bytes());
+    q.extend_from_slice(&(class as u16).to_be_bytes());
+    if q.len() > buflen.max(0) as usize {
+        return -1;
+    }
+    ptr::copy_nonoverlapping(q.as_ptr(), buf, q.len());
+    q.len() as c_int
+}
+
+/// Send a prepared message to the configured nameservers and return the answer (RES_NSEND).
+#[no_mangle]
+pub unsafe extern "C" fn __res_nsend(_st: *mut ResState, msg: *const u8, msglen: c_int, ans: *mut u8, anslen: c_int) -> c_int {
+    if msg.is_null() || msglen < 12 || ans.is_null() || anslen < 12 {
+        return -1;
+    }
+    let q = core::slice::from_raw_parts(msg, msglen as usize);
+    let out = core::slice::from_raw_parts_mut(ans, anslen as usize);
+    let n = fl::resolve::exchange(q, out);
+    if n < 12 {
+        set_h(TRY_AGAIN);
+        return -1;
+    }
+    n as c_int
+}
+#[no_mangle]
+pub unsafe extern "C" fn __res_send(msg: *const u8, msglen: c_int, ans: *mut u8, anslen: c_int) -> c_int {
+    __res_nsend(__res_state(), msg, msglen, ans, anslen)
+}
+
+/// Is `name` a valid host name (res_hnok) / domain name in a response (res_dnok)?
+fn name_ok(s: &[u8], host: bool) -> bool {
+    if s.len() > 255 {
+        return false;
+    }
+    for label in s.split(|&c| c == b'.') {
+        if label.len() > 63 {
+            return false;
+        }
+        for (i, &c) in label.iter().enumerate() {
+            let ok = c.is_ascii_alphanumeric()
+                || c == b'_'
+                || (c == b'-' && i > 0 && i + 1 < label.len())
+                || (!host && c.is_ascii_graphic());
+            if !ok {
+                return false;
+            }
+        }
+    }
+    true
+}
+#[no_mangle]
+pub unsafe extern "C" fn res_hnok(name: *const c_char) -> c_int {
+    name_ok(fl::mem::cstr(name), true) as c_int
+}
+#[no_mangle]
+pub unsafe extern "C" fn res_dnok(name: *const c_char) -> c_int {
+    name_ok(fl::mem::cstr(name), false) as c_int
+}
+#[no_mangle]
+pub unsafe extern "C" fn res_mailok(name: *const c_char) -> c_int {
+    res_dnok(name)
+}
+#[no_mangle]
+pub unsafe extern "C" fn res_ownok(name: *const c_char) -> c_int {
+    res_hnok(name)
+}
+
+static mut NSAP: [u8; 64] = [0; 64];
+
+#[no_mangle]
+pub unsafe extern "C" fn inet_nsap_ntoa(len: c_int, src: *const u8, dst: *mut c_char) -> *mut c_char {
+    let out = if dst.is_null() { ptr::addr_of_mut!(NSAP) as *mut c_char } else { dst };
+    let n = len.clamp(0, 20) as usize;
+    let mut p = out;
+    *p = b'0';
+    p = p.add(1);
+    *p = b'x';
+    p = p.add(1);
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    for i in 0..n {
+        let b = *src.add(i);
+        *p = HEX[(b >> 4) as usize];
+        p = p.add(1);
+        *p = HEX[(b & 15) as usize];
+        p = p.add(1);
+    }
+    *p = 0;
+    out
+}
