@@ -217,7 +217,7 @@ pub struct Fd {
 }
 
 fn fd_file(fd: u64) -> Result<Rc<RefCell<OpenFile>>, i64> {
-    current().fds.get(fd as usize).and_then(|f| f.as_ref()).map(|f| f.file.clone()).ok_or(EBADF)
+    current().fds.borrow().get(fd as usize).and_then(|f| f.as_ref()).map(|f| f.file.clone()).ok_or(EBADF)
 }
 
 fn fd_install(file: OpenFile, cloexec: bool) -> Result<i64, i64> {
@@ -225,7 +225,8 @@ fn fd_install(file: OpenFile, cloexec: bool) -> Result<i64, i64> {
 }
 
 fn fd_install_rc(file: Rc<RefCell<OpenFile>>, cloexec: bool, min: usize) -> Result<i64, i64> {
-    let fds = &mut current().fds;
+    let table = current().fds.clone();
+    let mut fds = table.borrow_mut();
     for (i, slot) in fds.iter_mut().enumerate().skip(min) {
         if slot.is_none() {
             *slot = Some(Fd { file, cloexec });
@@ -246,7 +247,7 @@ fn fd_install_rc(file: Rc<RefCell<OpenFile>>, cloexec: bool, min: usize) -> Resu
 /// The canonical path for a path argument relative to `dirfd`.
 fn base_dir(dirfd: i64, path: &str) -> Result<String, i64> {
     if path.starts_with('/') || dirfd == AT_FDCWD {
-        return Ok(current().cwd.clone());
+        return Ok(current().cwd.borrow().clone());
     }
     match &fd_file(dirfd as u64)?.borrow().kind {
         Kind::Dir(d) => Ok(d.clone()),
@@ -419,7 +420,9 @@ fn read(fd: u64, buf: u64, len: u64) -> Result<i64, i64> {
         if nonblock(&file) {
             return Err(EAGAIN);
         }
-        proc::block();
+        if proc::block() {
+            return Err(proc::ERESTART);
+        }
     }
 }
 
@@ -467,7 +470,6 @@ fn write(fd: u64, buf: u64, len: u64) -> Result<i64, i64> {
                     drop(p);
                     drop(f);
                     proc::signal(proc::pid(), 13); // SIGPIPE
-                    proc::check_signals();
                     return Err(EPIPE);
                 }
                 let room = PIPE_CAP - p.buf.len();
@@ -488,7 +490,9 @@ fn write(fd: u64, buf: u64, len: u64) -> Result<i64, i64> {
         if nonblock(&file) {
             return if done > 0 { Ok(done as i64) } else { Err(EAGAIN) };
         }
-        proc::block();
+        if proc::block() {
+            return if done > 0 { Ok(done as i64) } else { Err(proc::ERESTART) };
+        }
     }
 }
 
@@ -549,19 +553,21 @@ fn mmap(addr: u64, len: u64, _prot: u64, flags: u64, fd: u64, off: u64) -> Resul
         return Err(EINVAL);
     }
     let len = (len + PAGE - 1) & !(PAGE - 1);
-    let p = current();
+    let mm = current().mm.clone();
+    let mut m = mm.borrow_mut();
     let start = if flags & 0x10 != 0 {
         if addr & (PAGE - 1) != 0 {
             return Err(EINVAL);
         }
-        proc::unmap_range(p.pml4, addr, addr + len);
+        proc::unmap_range(m.pml4, addr, addr + len);
         addr
     } else {
-        let a = p.mmap_top.checked_sub(len).ok_or(ENOMEM)?;
-        p.mmap_top = a;
+        let a = m.mmap_top.checked_sub(len).ok_or(ENOMEM)?;
+        m.mmap_top = a;
         a
     };
-    proc::map_range(p.pml4, start, start + len, P_WRITE).map_err(|_| ENOMEM)?;
+    proc::map_range(m.pml4, start, start + len, P_WRITE).map_err(|_| ENOMEM)?;
+    drop(m);
     if flags & 0x20 == 0 {
         // a file mapping: a private copy of the file's bytes
         let file = fd_file(fd)?;
@@ -575,14 +581,15 @@ fn mmap(addr: u64, len: u64, _prot: u64, flags: u64, fd: u64, off: u64) -> Resul
 }
 
 fn brk(addr: u64) -> Result<i64, i64> {
-    let p = current();
-    if addr == 0 || addr < p.brk_start {
-        return Ok(p.brk as i64);
+    let mm = current().mm.clone();
+    let mut m = mm.borrow_mut();
+    if addr == 0 || addr < m.brk_start {
+        return Ok(m.brk as i64);
     }
-    if addr > p.brk && proc::map_range(p.pml4, p.brk, addr, P_WRITE).is_err() {
-        return Ok(p.brk as i64);
+    if addr > m.brk && proc::map_range(m.pml4, m.brk, addr, P_WRITE).is_err() {
+        return Ok(m.brk as i64);
     }
-    p.brk = addr;
+    m.brk = addr;
     Ok(addr as i64)
 }
 
@@ -609,10 +616,14 @@ fn read_timespec(p: u64) -> Result<u64, i64> {
     Ok(sec.saturating_mul(1_000_000_000).saturating_add(nsec))
 }
 
-fn sleep_until(ns: u64) {
+fn sleep_until(ns: u64) -> Result<i64, i64> {
     while now_ns() < ns {
-        proc::block(); // the timer wakes everyone every tick
+        if proc::block() {
+            // the timer wakes everyone every tick; a signal ends the sleep
+            return Err(proc::EINTR);
+        }
     }
+    Ok(0)
 }
 
 // poll: is the file ready for reading / writing?
@@ -670,7 +681,9 @@ fn poll(fds: u64, n: u64, timeout_ms: i64) -> Result<i64, i64> {
         if count > 0 || now_ns() >= deadline {
             return Ok(count);
         }
-        proc::block();
+        if proc::block() {
+            return Err(proc::ERESTART);
+        }
     }
 }
 
@@ -714,7 +727,9 @@ fn select(n: u64, rd: u64, wr: u64, ex: u64, timeout_ns: Option<u64>) -> Result<
             }
             return Ok(count);
         }
-        proc::block();
+        if proc::block() {
+            return Err(proc::ERESTART);
+        }
     }
 }
 
@@ -753,7 +768,6 @@ fn kill(pid: i64, sig: u64) -> Result<i64, i64> {
     if !found {
         return Err(ESRCH);
     }
-    proc::check_signals();
     Ok(0)
 }
 
@@ -820,6 +834,10 @@ fn report(nr: u64) {
 
 fn exec(f: &mut SyscallFrame, path: u64, argv_p: u64, envp_p: u64) -> Result<i64, i64> {
     let path = user_str(path)?;
+    exec_path(f, &path, argv_p, envp_p)
+}
+
+fn exec_path(f: &mut SyscallFrame, path: &str, argv_p: u64, envp_p: u64) -> Result<i64, i64> {
     let mut argv = Vec::new();
     let mut envp = Vec::new();
     for (list, out) in [(argv_p, &mut argv), (envp_p, &mut envp)] {
@@ -837,8 +855,8 @@ fn exec(f: &mut SyscallFrame, path: u64, argv_p: u64, envp_p: u64) -> Result<i64
             }
         }
     }
-    let (entry, sp) = proc::replace(&path, &argv, &envp)?;
-    *f = SyscallFrame { r15: 0, r14: 0, r13: 0, r12: 0, rbp: 0, rbx: 0, r9: 0, r8: 0, r10: 0, rdx: 0, rsi: 0, rdi: 0, rax: 0, rflags: 0x202, rip: entry, rsp: sp };
+    let (entry, sp) = proc::replace(path, &argv, &envp)?;
+    *f = proc::user_frame(entry, sp);
     // SAFETY: a new program has no thread pointer yet.
     unsafe { arch::wrmsr(arch::MSR_FS_BASE, 0) };
     Ok(0)
@@ -851,7 +869,8 @@ fn handle(f: &mut SyscallFrame) -> Result<i64, i64> {
         1 => write(a0, a1, a2),
         2 => open(AT_FDCWD, a0, a1, a2),
         3 => {
-            let fds = &mut current().fds;
+            let table = current().fds.clone();
+            let mut fds = table.borrow_mut();
             match fds.get_mut(a0 as usize) {
                 Some(s @ Some(_)) => {
                     *s = None;
@@ -893,37 +912,59 @@ fn handle(f: &mut SyscallFrame) -> Result<i64, i64> {
             if a0 & (PAGE - 1) != 0 {
                 return Err(EINVAL);
             }
-            proc::unmap_range(current().pml4, a0, a0.saturating_add(a1));
+            proc::unmap_range(current().pml4(), a0, a0.saturating_add(a1));
             Ok(0)
         }
         12 => brk(a0),
         13 => {
-            // rt_sigaction: remember the disposition (handlers are not called yet)
+            // rt_sigaction(sig, act, oldact): handler, flags, restorer, mask
             let sig = a0 as usize;
             if sig == 0 || sig > 64 {
                 return Err(EINVAL);
             }
-            let p = current();
+            let table = current().sig.clone();
             if a2 != 0 {
+                let old = table.borrow()[sig];
                 let s = user_slice(a2, 32)?;
-                s.fill(0);
-                s[0..8].copy_from_slice(&p.sigdisp[sig].to_le_bytes());
+                for (i, v) in [old.handler, old.flags, old.restorer, old.mask].iter().enumerate() {
+                    s[i * 8..i * 8 + 8].copy_from_slice(&v.to_le_bytes());
+                }
             }
             if a1 != 0 {
                 if sig == 9 || sig == 19 {
                     return Err(EINVAL);
                 }
-                p.sigdisp[sig] = user_u64(a1)?;
+                let act = proc::SigAction { handler: user_u64(a1)?, flags: user_u64(a1 + 8)?, restorer: user_u64(a1 + 16)?, mask: user_u64(a1 + 24)? };
+                table.borrow_mut()[sig] = act;
             }
             Ok(0)
         }
         14 => {
+            // rt_sigprocmask(how, set, oldset)
+            let p = current();
             if a2 != 0 {
-                user_slice(a2, 8)?.fill(0);
+                user_slice(a2, 8)?.copy_from_slice(&p.blocked.to_le_bytes());
+            }
+            if a1 != 0 {
+                let set = user_u64(a1)? & !((1 << 8) | (1 << 18));
+                match a0 {
+                    0 => p.blocked |= set,
+                    1 => p.blocked &= !set,
+                    2 => p.blocked = set,
+                    _ => return Err(EINVAL),
+                }
             }
             Ok(0)
         }
-        15 => Ok(0), // rt_sigreturn: no handlers run yet
+        15 => {
+            // rt_sigreturn: the registers from the signal frame
+            let mut r = proc::Regs::from_sys(f);
+            if proc::sigreturn(&mut r).is_err() {
+                proc::exit_signal(11);
+            }
+            r.to_sys(f);
+            Ok(r.r[0] as i64)
+        }
         16 => match &fd_file(a0)?.borrow().kind {
             Kind::Tty => tty_ioctl(a1, a2),
             _ => Err(ENOTTY),
@@ -993,7 +1034,8 @@ fn handle(f: &mut SyscallFrame) -> Result<i64, i64> {
             if a0 == a1 {
                 return if f.rax == 292 { Err(EINVAL) } else { Ok(n as i64) };
             }
-            let fds = &mut current().fds;
+            let table = current().fds.clone();
+            let mut fds = table.borrow_mut();
             while fds.len() <= n {
                 fds.push(None);
             }
@@ -1001,12 +1043,14 @@ fn handle(f: &mut SyscallFrame) -> Result<i64, i64> {
             Ok(n as i64)
         }
         34 => loop {
-            proc::block(); // pause: until a signal ends us
+            // pause: until a signal
+            if proc::block() {
+                return Err(proc::EINTR);
+            }
         },
         35 => {
             let ns = read_timespec(a0)?;
-            sleep_until(now_ns() + ns);
-            Ok(0)
+            sleep_until(now_ns() + ns)
         }
         230 => {
             let ns = read_timespec(a2)?;
@@ -1019,8 +1063,7 @@ fn handle(f: &mut SyscallFrame) -> Result<i64, i64> {
             } else {
                 now_ns() + ns
             };
-            sleep_until(until);
-            Ok(0)
+            sleep_until(until)
         }
         37 => Ok(0), // alarm
         38 => {
@@ -1029,7 +1072,7 @@ fn handle(f: &mut SyscallFrame) -> Result<i64, i64> {
             }
             Ok(0)
         } // setitimer
-        39 => Ok(proc::pid() as i64),
+        39 => Ok(current().tgid as i64),
         40 => {
             // sendfile(out, in, offset, count)
             let src = fd_file(a1)?;
@@ -1058,62 +1101,18 @@ fn handle(f: &mut SyscallFrame) -> Result<i64, i64> {
             Ok(k as i64)
         }
         41 => Err(EAFNOSUPPORT), // socket: no network yet
-        56 => {
-            // clone: like fork (threads, CLONE_VM without CLONE_VFORK, are not supported yet)
-            const CLONE_VM: u64 = 0x100;
-            const CLONE_VFORK: u64 = 0x4000;
-            if a0 & CLONE_VM != 0 && a0 & CLONE_VFORK == 0 {
-                report(56);
-                return Err(ENOSYS);
-            }
-            let mut frame = SyscallFrame { ..*f };
-            if a1 != 0 {
-                frame.rsp = a1;
-            }
-            proc::fork(&frame, a0 & CLONE_VFORK != 0).map(|p| p as i64)
-        }
-        57 => proc::fork(f, false).map(|p| p as i64),
-        58 => proc::fork(f, true).map(|p| p as i64),
+        56 => proc::clone(f, a0, a1, a2, a3, a4).map(|p| p as i64), // clone(flags, stack, ptid, ctid, tls)
+        57 => proc::clone(f, 17, 0, 0, 0, 0).map(|p| p as i64),
+        58 => proc::clone(f, proc::CLONE_VM | proc::CLONE_VFORK | 17, 0, 0, 0, 0).map(|p| p as i64),
         59 => exec(f, a0, a1, a2),
         322 => {
-            // execveat with a path (AT_EMPTY_PATH is not supported)
+            // execveat with a path (AT_EMPTY_PATH is not supported): resolve, then execve
             let path = user_str(a1)?;
             let canon = at_path(a0 as i64, &path, true)?;
-            let full = alloc::format!("/{canon}");
-            let saved = current().cwd.clone();
-            current().cwd = String::new();
-            // put the path where exec can read it: reuse the program's own string
-            let r = {
-                let (entry, sp) = {
-                    let mut argv = Vec::new();
-                    let mut envp = Vec::new();
-                    for (list, out) in [(a2, &mut argv), (a3, &mut envp)] {
-                        if list == 0 {
-                            continue;
-                        }
-                        for i in 0.. {
-                            let p = user_u64(list + i * 8)?;
-                            if p == 0 {
-                                break;
-                            }
-                            out.push(user_str(p)?);
-                        }
-                    }
-                    match proc::replace(&full, &argv, &envp) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            current().cwd = saved;
-                            return Err(e);
-                        }
-                    }
-                };
-                *f = SyscallFrame { r15: 0, r14: 0, r13: 0, r12: 0, rbp: 0, rbx: 0, r9: 0, r8: 0, r10: 0, rdx: 0, rsi: 0, rdi: 0, rax: 0, rflags: 0x202, rip: entry, rsp: sp };
-                Ok(0)
-            };
-            current().cwd = saved;
-            r
+            exec_path(f, &alloc::format!("/{canon}"), a2, a3)
         }
-        60 | 231 => proc::exit_current((a0 & 0xFF) as i64),
+        60 => proc::exit_thread((a0 & 0xFF) as i64),
+        231 => proc::exit_current((a0 & 0xFF) as i64),
         61 => {
             // wait4
             match proc::wait(a0 as i32, a2 & 1 != 0)? {
@@ -1159,8 +1158,8 @@ fn handle(f: &mut SyscallFrame) -> Result<i64, i64> {
             }
         }
         62 => kill(a0 as i32 as i64, a1),
-        200 => kill(a0 as i32 as i64, a1),
-        234 => kill(a1 as i32 as i64, a2),
+        200 => if proc::signal(a0 as i32, a1 as i32) { Ok(0) } else { Err(ESRCH) }, // tkill
+        234 => if proc::signal(a1 as i32, a2 as i32) { Ok(0) } else { Err(ESRCH) }, // tgkill
         63 => uname(a0),
         72 => {
             // fcntl
@@ -1169,10 +1168,11 @@ fn handle(f: &mut SyscallFrame) -> Result<i64, i64> {
                 0 | 1030 => fd_install_rc(file, a1 == 1030, a2 as usize),
                 1 => {
                     let p = current();
-                    Ok(if p.fds.get(a0 as usize).and_then(|f| f.as_ref()).is_some_and(|f| f.cloexec) { 1 } else { 0 })
+                    let fds = p.fds.borrow();
+                    Ok(if fds.get(a0 as usize).and_then(|f| f.as_ref()).is_some_and(|f| f.cloexec) { 1 } else { 0 })
                 }
                 2 => {
-                    if let Some(Some(fd)) = current().fds.get_mut(a0 as usize) {
+                    if let Some(Some(fd)) = current().fds.borrow_mut().get_mut(a0 as usize) {
                         fd.cloexec = a2 & 1 != 0;
                     }
                     Ok(0)
@@ -1203,7 +1203,7 @@ fn handle(f: &mut SyscallFrame) -> Result<i64, i64> {
             Ok(0)
         }
         79 => {
-            let cwd = alloc::format!("/{}", current().cwd);
+            let cwd = alloc::format!("/{}", current().cwd.borrow());
             if cwd.len() + 1 > a1 as usize {
                 return Err(ERANGE);
             }
@@ -1217,7 +1217,7 @@ fn handle(f: &mut SyscallFrame) -> Result<i64, i64> {
             if !node(&canon)?.is_dir() {
                 return Err(ENOTDIR);
             }
-            current().cwd = canon;
+            *current().cwd.borrow_mut() = canon;
             Ok(0)
         }
         81 => {
@@ -1225,7 +1225,7 @@ fn handle(f: &mut SyscallFrame) -> Result<i64, i64> {
                 Kind::Dir(d) => d.clone(),
                 _ => return Err(ENOTDIR),
             };
-            current().cwd = d;
+            *current().cwd.borrow_mut() = d;
             Ok(0)
         }
         82 | 264 | 316 => {
@@ -1365,7 +1365,12 @@ fn handle(f: &mut SyscallFrame) -> Result<i64, i64> {
             if p.pid != me && p.ppid != me {
                 return Err(ESRCH);
             }
-            p.pgid = pgid;
+            let tg = p.tgid;
+            for t in proc::all_tasks_of(tg) {
+                if let Some(t) = proc::get(t) {
+                    t.pgid = pgid;
+                }
+            }
             Ok(0)
         }
         110 => Ok(current().ppid as i64),
@@ -1385,22 +1390,39 @@ fn handle(f: &mut SyscallFrame) -> Result<i64, i64> {
             Ok(proc::get(target).ok_or(ESRCH)?.sid as i64)
         }
         127 => {
-            if a0 != 0 {
-                user_slice(a0, 8)?.fill(0);
-            }
+            let p = current();
+            let v = p.pending & p.blocked;
+            user_slice(a0, 8)?.copy_from_slice(&v.to_le_bytes());
             Ok(0)
         } // rt_sigpending
-        130 => loop {
-            proc::block(); // rt_sigsuspend
-        },
+        130 => {
+            // rt_sigsuspend: wait with this mask until a signal
+            current().blocked = user_u64(a0)? & !((1 << 8) | (1 << 18));
+            loop {
+                if proc::block() {
+                    return Err(proc::EINTR);
+                }
+            }
+        }
         131 => {
+            // sigaltstack(new, old): stack_t { sp, flags, size }
+            let p = current();
             if a1 != 0 {
                 let s = user_slice(a1, 24)?;
                 s.fill(0);
-                s[8..12].copy_from_slice(&2u32.to_le_bytes()); // SS_DISABLE
+                s[0..8].copy_from_slice(&p.altstack.0.to_le_bytes());
+                let flags: u32 = if p.altstack.1 == 0 { 2 } else { 0 };
+                s[8..12].copy_from_slice(&flags.to_le_bytes());
+                s[16..24].copy_from_slice(&p.altstack.1.to_le_bytes());
+            }
+            if a0 != 0 {
+                let sp = user_u64(a0)?;
+                let flags = user_u64(a0 + 8)? as u32;
+                let size = user_u64(a0 + 16)?;
+                p.altstack = if flags & 2 != 0 { (0, 0) } else { (sp, size) };
             }
             Ok(0)
-        } // sigaltstack
+        }
         133 | 259 => {
             // mknod, mknodat: FIFOs only
             let (fd, p, mode) = if f.rax == 133 { (AT_FDCWD, a0, a1) } else { (a0 as i64, a1, a2) };
@@ -1445,10 +1467,30 @@ fn handle(f: &mut SyscallFrame) -> Result<i64, i64> {
             Ok(t)
         }
         202 => {
-            // futex: one thread per process, so a wait could only wait forever
+            // futex(addr, op, val, timeout / val2, addr2, val3)
             match a1 & 0x7F {
-                0 | 9 => Err(EAGAIN),
-                _ => Ok(0),
+                0 => {
+                    let deadline = if a3 != 0 { Some(now_ns() + read_timespec(a3)?) } else { None };
+                    proc::futex_wait(a0, a2 as u32, deadline)
+                }
+                9 => {
+                    let deadline = if a3 != 0 {
+                        let t = read_timespec(a3)?;
+                        Some(if a1 & 256 != 0 { t.saturating_sub(realtime_ns()) + now_ns() } else { t })
+                    } else {
+                        None
+                    };
+                    proc::futex_wait(a0, a2 as u32, deadline)
+                }
+                1 | 10 => Ok(proc::futex_wake(a0, a2 as u32)),
+                3 | 4 => {
+                    // requeue: waking the ones to move as well is allowed (they check again)
+                    Ok(proc::futex_wake(a0, (a2 as u32).saturating_add(a3 as u32)))
+                }
+                _ => {
+                    report(202);
+                    Err(ENOSYS)
+                }
             }
         }
         204 => {
@@ -1459,7 +1501,10 @@ fn handle(f: &mut SyscallFrame) -> Result<i64, i64> {
             Ok(8)
         } // sched_getaffinity: CPU 0
         217 => getdents64(a0, a1, a2),
-        218 => Ok(proc::pid() as i64), // set_tid_address
+        218 => {
+            current().clear_tid = a0;
+            Ok(proc::pid() as i64)
+        }
         228 => timespec(a1, if a0 == 0 { realtime_ns() } else { now_ns() }),
         229 => {
             if a1 != 0 {
@@ -1515,16 +1560,19 @@ fn handle(f: &mut SyscallFrame) -> Result<i64, i64> {
     }
 }
 
-/// From the `syscall` entry: the program's registers; the result goes back in rax.
+/// From the `syscall` entry: the program's registers; the result goes back in rax. On the way
+/// back, pending signals are acted on (a handler gets its frame here).
 pub extern "sysv64" fn dispatch(f: &mut SyscallFrame) {
-    let r = match handle(f) {
-        Ok(v) => v,
-        Err(e) => -e,
-    };
-    f.rax = r as u64;
-    // a fatal signal that arrived meanwhile
-    proc::check_signals();
-    // sysret into a non-canonical address would fault in the kernel: end the program instead
+    let nr = f.rax;
+    let mut restart = None;
+    match handle(f) {
+        Ok(v) => f.rax = v as u64,
+        Err(proc::ERESTART) => restart = Some(nr),
+        Err(e) => f.rax = (-e) as u64,
+    }
+    let mut r = proc::Regs::from_sys(f);
+    proc::deliver_signals(&mut r, restart);
+    r.to_sys(f);
     if f.rip >= proc::USER_TOP {
         proc::exit_signal(11);
     }

@@ -53,6 +53,9 @@ fn eoi(line: u8) {
     }
 }
 
+/// Devices that are polled rather than interrupting (called while idle).
+pub fn poll_devices() {}
+
 /// Bytes waiting on the serial port.
 pub fn poll_serial() {
     // SAFETY: COM1's registers.
@@ -66,14 +69,14 @@ pub fn poll_serial() {
 }
 
 /// A device interrupt on legacy line `line`. `from_user`: it arrived while a program ran.
-pub fn irq(line: u8, from_user: bool) {
+pub fn irq(line: u8, frame: Option<&mut crate::arch::IntFrame>) {
     match line {
         0 => {
             // SAFETY: only this interrupt writes TICKS.
             unsafe { TICKS += 1 };
             poll_serial();
             eoi(0);
-            proc::tick(from_user);
+            proc::tick(frame);
         }
         1 => {
             // SAFETY: the i8042's data port.

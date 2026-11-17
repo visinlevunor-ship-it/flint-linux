@@ -190,7 +190,7 @@ const NAMES: [&str; 32] = [
 extern "sysv64" fn interrupt_handler(f: &mut IntFrame) {
     let from_user = f.cs & 3 == 3;
     if f.vector >= 32 {
-        crate::dev::irq((f.vector - 32) as u8, from_user);
+        crate::dev::irq((f.vector - 32) as u8, if from_user { Some(f) } else { None });
         return;
     }
     let cr2: u64;
@@ -248,8 +248,10 @@ pub unsafe fn rdmsr(msr: u32) -> u64 {
     (hi as u64) << 32 | lo as u64
 }
 
-/// The registers of a program at its system call, from the lowest address up.
+/// The registers of a program at its system call, from the lowest address up. The top five
+/// are an iretq frame, so returning restores every register (needed after signal handlers).
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct SyscallFrame {
     pub r15: u64,
     pub r14: u64,
@@ -257,16 +259,20 @@ pub struct SyscallFrame {
     pub r12: u64,
     pub rbp: u64,
     pub rbx: u64,
+    pub r11: u64,
+    pub r10: u64,
     pub r9: u64,
     pub r8: u64,
-    pub r10: u64,
-    pub rdx: u64,
-    pub rsi: u64,
     pub rdi: u64,
+    pub rsi: u64,
+    pub rdx: u64,
+    pub rcx: u64,
     pub rax: u64,
-    pub rflags: u64,
     pub rip: u64,
+    pub cs: u64,
+    pub rflags: u64,
     pub rsp: u64,
+    pub ss: u64,
 }
 
 #[no_mangle]
@@ -279,16 +285,20 @@ global_asm!(
     "syscall_entry:",
     "mov [rip + SYSCALL_USER_RSP], rsp",
     "mov rsp, [rip + SYSCALL_STACK_TOP]",
+    "push {udata}",
     "push qword ptr [rip + SYSCALL_USER_RSP]",
-    "push rcx",
     "push r11",
+    "push {ucode}",
+    "push rcx",
     "push rax",
-    "push rdi",
-    "push rsi",
+    "push rcx",
     "push rdx",
-    "push r10",
+    "push rsi",
+    "push rdi",
     "push r8",
     "push r9",
+    "push r10",
+    "push r11",
     "push rbx",
     "push rbp",
     "push r12",
@@ -307,18 +317,19 @@ global_asm!(
     "pop r12",
     "pop rbp",
     "pop rbx",
+    "pop r11",
+    "pop r10",
     "pop r9",
     "pop r8",
-    "pop r10",
-    "pop rdx",
-    "pop rsi",
     "pop rdi",
-    "pop rax",
-    "pop r11",
+    "pop rsi",
+    "pop rdx",
     "pop rcx",
-    "pop rsp",
-    "sysretq",
+    "pop rax",
+    "iretq",
     dispatch = sym crate::syscall::dispatch,
+    udata = const UDATA,
+    ucode = const UCODE,
 );
 
 extern "C" {
