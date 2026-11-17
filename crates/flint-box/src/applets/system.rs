@@ -200,7 +200,32 @@ pub fn parse_stat(line: &str) -> Option<Stat> {
     })
 }
 
-pub fn ps(_args: &[String]) -> i32 {
+/// The memory a process has in RAM (resident set), in KiB: /proc/PID/statm's second field
+/// is in pages.
+fn rss_kib(statm: &str, page_kib: u64) -> u64 {
+    statm.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0) * page_kib
+}
+
+/// `ps`: every process with its owner, CPU time and memory in RAM (RSS); `ps -m` sorts by
+/// memory, biggest first.
+pub fn ps(args: &[String]) -> i32 {
+    let mut by_memory = false;
+    for a in args {
+        match a.as_str() {
+            "-m" => by_memory = true,
+            // the usual all-processes options: every process is listed anyway
+            "-e" | "-A" | "aux" | "-ef" | "ax" | "-a" | "-x" => {}
+            _ => {
+                error("ps", &format!("unknown option {a} (usage: ps [-m])"));
+                return 2;
+            }
+        }
+    }
+    // SAFETY: sysconf has no preconditions.
+    let page_kib = match unsafe { libc::sysconf(libc::_SC_PAGESIZE) } {
+        n if n > 0 => n as u64 / 1024,
+        _ => 4,
+    };
     let users: std::collections::HashMap<u32, String> =
         parse_passwd(&fs::read_to_string("/etc/passwd").unwrap_or_default()).into_iter().map(|u| (u.uid, u.name)).collect();
     // SAFETY: sysconf has no preconditions.
@@ -209,7 +234,7 @@ pub fn ps(_args: &[String]) -> i32 {
         _ => 100,
     };
 
-    let mut rows: Vec<(u32, String, u64, String)> = Vec::new();
+    let mut rows: Vec<(u32, String, u64, u64, String)> = Vec::new();
     let Ok(rd) = fs::read_dir("/proc") else {
         error("ps", "cannot read /proc (is it mounted?)");
         return 1;
@@ -228,25 +253,53 @@ pub fn ps(_args: &[String]) -> i32 {
             let text = String::from_utf8_lossy(&cmdline);
             text.trim_end_matches('\0').replace('\0', " ")
         };
-        rows.push((pid, user, stat.ticks / hz, command));
+        let rss = rss_kib(&fs::read_to_string(format!("{dir}/statm")).unwrap_or_default(), page_kib);
+        rows.push((pid, user, stat.ticks / hz, rss, command));
     }
-    rows.sort_by_key(|r| r.0);
+    if by_memory {
+        rows.sort_by(|a, b| b.3.cmp(&a.3).then(a.0.cmp(&b.0)));
+    } else {
+        rows.sort_by_key(|r| r.0);
+    }
 
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let r: io::Result<()> = (|| {
-        writeln!(out, "{:>5} {:<8} {:>5}  COMMAND", "PID", "USER", "TIME")?;
-        for (pid, user, secs, command) in &rows {
-            writeln!(out, "{pid:>5} {user:<8.8} {:>2}:{:02}  {command}", secs / 60, secs % 60)?;
+        writeln!(out, "{:>5} {:<8} {:>5} {:>7}  COMMAND", "PID", "USER", "TIME", "RSS")?;
+        for (pid, user, secs, rss, command) in &rows {
+            writeln!(out, "{pid:>5} {user:<8.8} {:>2}:{:02} {:>7}  {command}", secs / 60, secs % 60, human_kib(*rss))?;
         }
         Ok(())
     })();
     util::finish_output("ps", r)
 }
 
+/// 812K, 37.5M, 1.2G
+fn human_kib(k: u64) -> String {
+    if k == 0 {
+        "0".into()
+    } else if k < 1024 {
+        format!("{k}K")
+    } else if k < 1024 * 1024 {
+        format!("{:.1}M", k as f64 / 1024.0)
+    } else {
+        format!("{:.1}G", k as f64 / (1024.0 * 1024.0))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rss_from_statm() {
+        assert_eq!(rss_kib("5000 1234 300 10 0 900 0\n", 4), 4936);
+        assert_eq!(rss_kib("", 4), 0);
+        assert_eq!(human_kib(0), "0");
+        assert_eq!(human_kib(812), "812K");
+        assert_eq!(human_kib(38400), "37.5M");
+        assert_eq!(human_kib(1258291), "1.2G");
+    }
 
     #[test]
     fn mount_options() {

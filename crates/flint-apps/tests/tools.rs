@@ -354,6 +354,10 @@ fn mount_lists_and_ps_shows_processes() {
     assert_eq!(ps.code, 0);
     assert!(ps.stdout.lines().next().unwrap().contains("PID"));
     assert!(ps.stdout.lines().count() >= 2, "{}", ps.stdout);
+    assert!(ps.stdout.lines().next().unwrap().contains("RSS"));
+    let m = run(&["ps", "-m"]);
+    assert_eq!(m.code, 0);
+    assert_eq!(run(&["ps", "-Z"]).code, 2);
 
     assert_eq!(run(&["umount"]).code, 1);
     assert_eq!(run(&["umount", "/definitely/not/mounted"]).code, 1);
