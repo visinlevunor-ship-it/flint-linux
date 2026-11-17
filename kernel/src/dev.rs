@@ -54,7 +54,9 @@ fn eoi(line: u8) {
 }
 
 /// Devices that are polled rather than interrupting (called while idle).
-pub fn poll_devices() {}
+pub fn poll_devices() {
+    crate::xhci::poll();
+}
 
 /// Restart the machine: the keyboard controller's reset line, then the PCI reset register.
 pub fn reboot() -> ! {
@@ -105,6 +107,7 @@ pub fn irq(line: u8, frame: Option<&mut crate::arch::IntFrame>) {
             // SAFETY: only this interrupt writes TICKS.
             unsafe { TICKS += 1 };
             poll_serial();
+            poll_devices();
             eoi(0);
             proc::tick(frame);
         }

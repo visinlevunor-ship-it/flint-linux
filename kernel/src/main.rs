@@ -28,6 +28,7 @@ mod nvme;
 mod pci;
 mod persist;
 mod virtio_blk;
+mod xhci;
 mod efi;
 mod font;
 mod mem;
@@ -256,6 +257,7 @@ extern "C" fn kmain() -> ! {
         if let Some(disk) = virtio_blk::probe(d, 0) {
             block::register(disk);
         }
+        xhci::probe(d);
     }
     block::scan_partitions();
     persist::init(cmdline);

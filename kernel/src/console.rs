@@ -33,7 +33,7 @@ fn serial_byte(b: u8) {
     // SAFETY: COM1's registers.
     unsafe {
         let mut spins = 0;
-        while inb(COM1 + 5) & 0x20 == 0 && spins < 100_000 {
+        while inb(COM1 + 5) & 0x20 == 0 && spins < 5_000_000 {
             spins += 1;
         }
         outb(COM1, b);
