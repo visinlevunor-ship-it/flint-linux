@@ -5,30 +5,32 @@ written in Rust, started by flint-boot like Linux, and running ordinary Linux x8
 through Linux's system calls, so Flint's userland (and other static Linux programs) run on it
 unchanged.
 
-**Version 0.1 is an early step, not a replacement yet.** It boots, takes over the machine and
-runs a list of programs from the base image one after another, then stops. Linux stays the
+**Version 0.2 runs Flint's shell interactively**, with processes, pipes and a writable RAM
+filesystem. It is still early: no disks, network, USB or GPU drivers yet. Linux stays the
 kernel Flint boots by default.
 
-## What 0.1 does
+## What 0.2 does
 
 - **Boot**: a UEFI program. flint-boot loads it like Linux's kernel and hands it the command
   line and the base image (LoadFile2 on Linux's initrd media path). It takes the framebuffer
   and the memory map from UEFI, then leaves UEFI (ExitBootServices).
 - **Memory**: its own page tables. All physical memory is mapped in the upper half; each
-  program gets its own lower half. Physical pages come from the UEFI memory map; a 16 MiB
-  heap for the kernel.
-- **CPU**: its own GDT/TSS, an interrupt table for the CPU's exceptions (a program's page fault
-  ends that program with a message, as SIGSEGV would), and the `syscall` instruction.
-- **Programs**: static ELF executables (and static-PIE), loaded with the stack Linux lays out
-  (argc, argv, envp, auxv with AT_PHDR, AT_RANDOM and the rest). One runs at a time.
-- **Files**: the base image (cpio) as a read-only root filesystem, with directories and
-  symbolic links. Writes to it answer EROFS.
-- **Console**: the screen (UEFI framebuffer, 8x16 font from DejaVu Sans Mono) and COM1.
-- **System calls**: read, write, open/openat, close, stat/lstat/fstat/newfstatat, lseek,
-  pread64, readv/writev, sendfile, getdents64, readlink, access, getcwd, chdir, dup/dup2/dup3,
-  fcntl, ioctl (terminal size), mmap/munmap/brk, execve, exit, uname, arch_prctl,
-  clock_gettime, nanosleep, getrandom, prlimit, sysinfo and the identity calls. Anything else
-  answers ENOSYS and is named once on the console.
+  process gets its own lower half. Stacks grow on demand.
+- **Processes**: fork, vfork, clone (without threads), execve (also `#!` scripts), exit,
+  wait4/waitid, process groups and sessions. Each process has its own kernel stack; a timer
+  (PIT, 100 Hz) gives each a 50 ms slice. Signals have their default actions: Ctrl-C ends
+  the foreground program, kill works, a fault ends only the program that caused it. Signal
+  handlers are not called yet.
+- **Files**: the base image (cpio) with a writable layer in RAM on top, like an overlay mount:
+  create, write, append, truncate, mkdir, rm, rename, symlinks, chmod. `/dev/null`, `zero`,
+  `random`, `urandom`, `tty`, `console`. Pipes, dup, fcntl, poll and select.
+- **Terminal**: the screen (UEFI framebuffer, 8x16 font, the cursor and erase sequences line
+  editors use) and COM1. Input from the keyboard (i8042: PS/2, which is how most laptops
+  connect their own keyboard) and the serial port, with Linux's termios: line editing, echo,
+  raw mode, Ctrl-C, Ctrl-\\, Ctrl-D.
+- **Clock**: the real-time clock for the date, the TSC (measured against the PIT) for time.
+- **System calls**: about 130 of Linux's. Anything else answers ENOSYS and is named once on
+  the console.
 
 ## Trying it
 
@@ -37,18 +39,17 @@ kernel/build.sh            # needs the rust-src component; builds core and alloc
 image/build-disk.sh        # adds "Flint kernel (experimental)" to the boot menu
 ```
 
-Choose **Flint kernel (experimental)** in the boot menu. It runs `uname -a`,
-`cat /etc/os-release`, `ls -l /`, a shell command and `echo`. Other programs:
-`flint.run=PROG,ARG,ARG;PROG,ARG` on the command line (an entry's `options` line).
+Choose **Flint kernel (experimental)** in the boot menu: Flint's shell starts on the screen
+(and on the serial port). Everything you create lives in RAM and is gone after a restart.
+`init=PROGRAM,ARG,...` on the command line (an entry's `options` line) starts something else
+first. Leaving that first program (`exit`) stops the machine.
 
 ## What comes next
 
 In order:
 
-1. **Processes**: fork, wait, pipes, a scheduler with a timer (APIC), so `/init`, `login` and
-   `sh` run.
-2. **Keyboard**: i8042 (PS/2, the keyboard of most laptops) and the serial port, so the shell
-   is interactive.
+1. **Signal handlers and threads** (clone with CLONE_VM, futex), so more programs run.
+2. **Flint's own init**: /proc, /sys and /dev the way Flint's init and devd expect them.
 3. **Storage**: NVMe and AHCI, and a filesystem for the data partition.
 4. **USB** (xHCI): keyboards, mice, sticks.
 5. **Networking**: a NIC driver and a TCP/IP stack.

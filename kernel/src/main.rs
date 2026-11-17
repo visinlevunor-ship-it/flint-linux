@@ -7,9 +7,9 @@
 //! system call entry. Programs are ordinary static Linux x86-64 executables; they talk to the
 //! kernel through Linux's system calls.
 //!
-//! Version 0.1 runs programs from the base image one after another (no fork yet), with the
-//! base image as a read-only root filesystem, console output on the screen and the serial
-//! port, and no drivers besides those two.
+//! Version 0.2 runs processes (fork, exec, wait, pipes, a scheduler with a timer), reads the
+//! keyboard (i8042) and the serial port, and gives programs the base image with a writable
+//! layer in RAM as their root filesystem. The first program is Flint's shell.
 
 #![no_std]
 #![no_main]
@@ -19,11 +19,14 @@ extern crate alloc;
 mod arch;
 mod console;
 mod cpio;
+mod dev;
 mod efi;
 mod font;
 mod mem;
 mod proc;
 mod syscall;
+mod tty;
+mod vfs;
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -232,26 +235,25 @@ extern "C" fn kmain() -> ! {
     let n = cpio::load(img);
     kprintln!("[kernel] base image: {} KiB, {} files", h.initrd_size / 1024, n);
 
-    let env: Vec<String> = ["PATH=/bin:/sbin:/usr/bin:/usr/sbin", "HOME=/root", "TERM=linux", "USER=root", "LANG=C.UTF-8"]
+    vfs::init();
+    dev::init();
+
+    let env: Vec<String> = ["PATH=/bin:/sbin:/usr/bin:/usr/sbin", "HOME=/root", "TERM=linux", "USER=root", "LOGNAME=root", "SHELL=/bin/sh", "LANG=C.UTF-8"]
         .iter()
         .map(|s| s.to_string())
         .collect();
-    for cmd in programs(cmdline) {
-        let argv: Vec<String> = cmd.split(',').filter(|a| !a.is_empty()).map(|a| a.to_string()).collect();
-        if argv.is_empty() {
-            continue;
-        }
-        kprintln!("\n# {}", argv.join(" "));
-        let path = find_program(&argv[0]);
-        match proc::run(&path, &argv, &env) {
-            Ok(0) => {}
-            Ok(code) => kprintln!("[kernel] {} exited with status {}", argv[0], code),
-            Err(e) => kprintln!("[kernel] cannot run {}: error {}", argv[0], e),
+    // the first program: init=PROGRAM[,ARG...] as on Linux, else Flint's shell
+    let mut argv: Vec<String> = alloc::vec!["sh".to_string()];
+    for w in cmdline.split(' ') {
+        if let Some(v) = w.strip_prefix("init=") {
+            argv = v.split(',').filter(|a| !a.is_empty()).map(|a| a.to_string()).collect();
         }
     }
-    // SAFETY: counters read on one CPU.
-    let used = unsafe { mem::USED_PAGES * 4096 };
-    kprintln!("\n[kernel] all programs finished; {} KiB in use. The machine can be switched off.", used / 1024);
+    let path = find_program(&argv[0]);
+    kprintln!("[kernel] starting {}\n", path);
+    if let Err(e) = proc::start_init(&path, &argv, &env, proc::console_fds()) {
+        kprintln!("[kernel] cannot start {}: error {}", path, e);
+    }
     arch::halt()
 }
 
@@ -262,23 +264,9 @@ fn find_program(name: &str) -> String {
     }
     for dir in ["bin", "sbin", "usr/bin", "usr/sbin"] {
         let p = alloc::format!("/{dir}/{name}");
-        if cpio::resolve("", &p, true).is_ok() {
+        if vfs::resolve("", &p, true).is_ok() {
             return p;
         }
     }
     name.to_string()
-}
-
-/// The programs to run: `flint.run=PROG,ARG,...;PROG,...` on the command line, else a
-/// demonstration of the base image's own programs.
-fn programs(cmdline: &str) -> Vec<String> {
-    for w in cmdline.split(' ') {
-        if let Some(list) = w.strip_prefix("flint.run=") {
-            return list.split(';').map(|s| s.to_string()).collect();
-        }
-    }
-    ["uname,-a", "cat,/etc/os-release", "ls,-l,/", "sh,-c,echo $((6 * 7)) from the Flint shell", "echo,Flint,userland,on,the,Flint,kernel"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect()
 }

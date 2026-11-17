@@ -107,11 +107,27 @@ struct Gate {
     _r: u32,
 }
 
-static mut IDT: [Gate; 32] = [Gate { off_lo: 0, sel: 0, ist: 0, attr: 0, off_mid: 0, off_hi: 0, _r: 0 }; 32];
+static mut IDT: [Gate; 48] = [Gate { off_lo: 0, sel: 0, ist: 0, attr: 0, off_mid: 0, off_hi: 0, _r: 0 }; 48];
 
-/// What the exception stubs push, from the lowest address up.
+/// Every register at an exception or interrupt, from the lowest address up: what the stub
+/// pushes, then what the CPU pushed.
 #[repr(C)]
-pub struct TrapFrame {
+pub struct IntFrame {
+    pub r15: u64,
+    pub r14: u64,
+    pub r13: u64,
+    pub r12: u64,
+    pub r11: u64,
+    pub r10: u64,
+    pub r9: u64,
+    pub r8: u64,
+    pub rbp: u64,
+    pub rdi: u64,
+    pub rsi: u64,
+    pub rdx: u64,
+    pub rcx: u64,
+    pub rbx: u64,
+    pub rax: u64,
     pub vector: u64,
     pub error: u64,
     pub rip: u64,
@@ -121,36 +137,48 @@ pub struct TrapFrame {
     pub ss: u64,
 }
 
-// One stub per exception: the CPU pushes an error code for some; the others push 0.
+// One stub per vector: the CPU pushes an error code for some exceptions; the others push 0.
+// 0-31 are the CPU's exceptions, 32-47 the legacy interrupt controller's lines.
 global_asm!(
-    ".macro TRAP n, err",
-    ".global trap\\n",
-    "trap\\n:",
+    ".macro ISR n, err",
+    ".global isr\\n",
+    "isr\\n:",
     ".if \\err == 0",
     "push 0",
     ".endif",
     "push \\n",
-    "jmp trap_common",
+    "jmp isr_common",
     ".endm",
-    "TRAP 0,0", "TRAP 1,0", "TRAP 2,0", "TRAP 3,0", "TRAP 4,0", "TRAP 5,0", "TRAP 6,0", "TRAP 7,0",
-    "TRAP 8,1", "TRAP 9,0", "TRAP 10,1", "TRAP 11,1", "TRAP 12,1", "TRAP 13,1", "TRAP 14,1", "TRAP 15,0",
-    "TRAP 16,0", "TRAP 17,1", "TRAP 18,0", "TRAP 19,0", "TRAP 20,0", "TRAP 21,1", "TRAP 22,0", "TRAP 23,0",
-    "TRAP 24,0", "TRAP 25,0", "TRAP 26,0", "TRAP 27,0", "TRAP 28,0", "TRAP 29,1", "TRAP 30,1", "TRAP 31,0",
-    "trap_common:",
-    // the frame is at rsp; keep the stack 16-byte aligned for the call
+    "ISR 0,0", "ISR 1,0", "ISR 2,0", "ISR 3,0", "ISR 4,0", "ISR 5,0", "ISR 6,0", "ISR 7,0",
+    "ISR 8,1", "ISR 9,0", "ISR 10,1", "ISR 11,1", "ISR 12,1", "ISR 13,1", "ISR 14,1", "ISR 15,0",
+    "ISR 16,0", "ISR 17,1", "ISR 18,0", "ISR 19,0", "ISR 20,0", "ISR 21,1", "ISR 22,0", "ISR 23,0",
+    "ISR 24,0", "ISR 25,0", "ISR 26,0", "ISR 27,0", "ISR 28,0", "ISR 29,1", "ISR 30,1", "ISR 31,0",
+    "ISR 32,0", "ISR 33,0", "ISR 34,0", "ISR 35,0", "ISR 36,0", "ISR 37,0", "ISR 38,0", "ISR 39,0",
+    "ISR 40,0", "ISR 41,0", "ISR 42,0", "ISR 43,0", "ISR 44,0", "ISR 45,0", "ISR 46,0", "ISR 47,0",
+    "isr_common:",
+    "push rax", "push rbx", "push rcx", "push rdx", "push rsi", "push rdi", "push rbp",
+    "push r8", "push r9", "push r10", "push r11", "push r12", "push r13", "push r14", "push r15",
     "mov rdi, rsp",
+    "mov rbp, rsp",
     "and rsp, -16",
     "call {handler}",
-    "ud2",
-    handler = sym trap_handler,
+    "mov rsp, rbp",
+    "pop r15", "pop r14", "pop r13", "pop r12", "pop r11", "pop r10", "pop r9", "pop r8",
+    "pop rbp", "pop rdi", "pop rsi", "pop rdx", "pop rcx", "pop rbx", "pop rax",
+    "add rsp, 16",
+    "iretq",
+    handler = sym interrupt_handler,
 );
 
-extern "C" {
-    fn trap0(); fn trap1(); fn trap2(); fn trap3(); fn trap4(); fn trap5(); fn trap6(); fn trap7();
-    fn trap8(); fn trap9(); fn trap10(); fn trap11(); fn trap12(); fn trap13(); fn trap14(); fn trap15();
-    fn trap16(); fn trap17(); fn trap18(); fn trap19(); fn trap20(); fn trap21(); fn trap22(); fn trap23();
-    fn trap24(); fn trap25(); fn trap26(); fn trap27(); fn trap28(); fn trap29(); fn trap30(); fn trap31();
+macro_rules! isr_table {
+    ($($n:ident),*) => {
+        extern "C" { $(fn $n();)* }
+        const ISRS: [unsafe extern "C" fn(); 48] = [$($n),*];
+    };
 }
+isr_table!(isr0, isr1, isr2, isr3, isr4, isr5, isr6, isr7, isr8, isr9, isr10, isr11, isr12, isr13, isr14, isr15,
+    isr16, isr17, isr18, isr19, isr20, isr21, isr22, isr23, isr24, isr25, isr26, isr27, isr28, isr29, isr30, isr31,
+    isr32, isr33, isr34, isr35, isr36, isr37, isr38, isr39, isr40, isr41, isr42, isr43, isr44, isr45, isr46, isr47);
 
 const NAMES: [&str; 32] = [
     "divide error", "debug", "NMI", "breakpoint", "overflow", "bound range", "invalid opcode", "no FPU",
@@ -159,31 +187,41 @@ const NAMES: [&str; 32] = [
     "control protection", "22", "23", "24", "25", "26", "27", "hypervisor", "VMM communication", "security", "31",
 ];
 
-extern "sysv64" fn trap_handler(f: &TrapFrame) -> ! {
+extern "sysv64" fn interrupt_handler(f: &mut IntFrame) {
+    let from_user = f.cs & 3 == 3;
+    if f.vector >= 32 {
+        crate::dev::irq((f.vector - 32) as u8, from_user);
+        return;
+    }
     let cr2: u64;
     // SAFETY: reading CR2 has no side effects.
     unsafe { asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)) };
-    let name = NAMES[(f.vector & 31) as usize];
-    if f.cs & 3 == 3 {
-        // a program's fault ends the program, as a signal would on Linux
-        if f.vector == 14 {
-            kprintln!("[kernel] {}: page fault at {:#x} (ip {:#x}, error {:#x}); killed", crate::proc::name(), cr2, f.rip, f.error);
-        } else {
-            kprintln!("[kernel] {}: {} (ip {:#x}, error {:#x}); killed", crate::proc::name(), name, f.rip, f.error);
+    let name = NAMES[f.vector as usize];
+    if from_user {
+        // the program's own stack: grow it on demand, as Linux does
+        if f.vector == 14 && crate::proc::grow_stack(cr2) {
+            return;
         }
-        crate::proc::exit_current(128 + if f.vector == 14 || f.vector == 13 { 11 } else { 4 });
+        // a program's fault ends the program, as the matching signal would on Linux
+        if f.vector == 14 {
+            kprintln!("[kernel] {} (pid {}): page fault at {:#x} (ip {:#x}); killed", crate::proc::name(), crate::proc::pid(), cr2, f.rip);
+        } else {
+            kprintln!("[kernel] {} (pid {}): {} (ip {:#x}); killed", crate::proc::name(), crate::proc::pid(), name, f.rip);
+        }
+        let sig = match f.vector {
+            0 => 8,       // SIGFPE
+            6 => 4,       // SIGILL
+            3 => 5,       // SIGTRAP
+            _ => 11,      // SIGSEGV
+        };
+        crate::proc::exit_signal(sig);
     }
     kprintln!("\n[kernel] PANIC: {} in the kernel at {:#x} (error {:#x}, cr2 {:#x})", name, f.rip, f.error, cr2);
     halt()
 }
 
 pub unsafe fn init_idt() {
-    let handlers: [unsafe extern "C" fn(); 32] = [
-        trap0, trap1, trap2, trap3, trap4, trap5, trap6, trap7, trap8, trap9, trap10, trap11, trap12, trap13, trap14, trap15,
-        trap16, trap17, trap18, trap19, trap20, trap21, trap22, trap23, trap24, trap25, trap26, trap27, trap28, trap29, trap30,
-        trap31,
-    ];
-    for (i, h) in handlers.iter().enumerate() {
+    for (i, h) in ISRS.iter().enumerate() {
         let a = *h as *const () as u64;
         IDT[i] = Gate { off_lo: a as u16, sel: KCODE, ist: 0, attr: 0x8E, off_mid: (a >> 16) as u16, off_hi: (a >> 32) as u32, _r: 0 };
     }
@@ -259,6 +297,10 @@ global_asm!(
     "push r15",
     "mov rdi, rsp",
     "call {dispatch}",
+    // back to the program; a new process (fork's child, the first program) starts here too,
+    // with its SyscallFrame at rsp
+    ".global syscall_return",
+    "syscall_return:",
     "pop r15",
     "pop r14",
     "pop r13",
@@ -281,12 +323,17 @@ global_asm!(
 
 extern "C" {
     fn syscall_entry();
+    fn syscall_return();
+}
+
+pub fn syscall_return_addr() -> u64 {
+    syscall_return as *const () as u64
 }
 
 pub unsafe fn init_syscall() {
     SYSCALL_STACK_TOP = stack_top(addr_of!(SYSCALL_STACK));
     wrmsr(MSR_EFER, rdmsr(MSR_EFER) | 1); // SCE
-    wrmsr(MSR_STAR, ((0x10u64 | 0) << 48) | ((KCODE as u64) << 32));
+    wrmsr(MSR_STAR, (0x10u64 << 48) | ((KCODE as u64) << 32));
     wrmsr(MSR_LSTAR, syscall_entry as *const () as u64);
     wrmsr(MSR_FMASK, 0x4_0700); // IF, TF, DF, AC cleared on entry
     // SSE for programs (the kernel itself is built without it)
@@ -297,49 +344,36 @@ pub unsafe fn init_syscall() {
     let mut cr4: u64;
     asm!("mov {}, cr4", out(reg) cr4);
     cr4 |= (1 << 9) | (1 << 10); // OSFXSR, OSXMMEXCPT
+    cr4 &= !(1 << 21); // no SMAP: the kernel reads programs' buffers directly
     asm!("mov cr4, {}", in(reg) cr4);
 }
 
-// ---------------------------------------------------------------------------------------
-// Into a program and back
+/// The kernel stack for the process about to run: system calls and interrupts from user
+/// mode arrive on it.
+pub fn set_kernel_stack(top: u64) {
+    // SAFETY: one CPU; read only on the next entry from user mode.
+    unsafe {
+        SYSCALL_STACK_TOP = top;
+        TSS.rsp0 = top;
+    }
+}
 
-/// The kernel's registers while a program runs: `exit_to_kernel` returns from `enter_user`.
-#[no_mangle]
-static mut KERNEL_RSP: u64 = 0;
+// ---------------------------------------------------------------------------------------
+// Switching between processes
 
 global_asm!(
-    // enter_user(rip, rsp): save the kernel's callee-saved registers, then iretq to ring 3
-    ".global enter_user",
-    "enter_user:",
+    // context_switch(save: *mut u64, next: u64): save this kernel stack's place, continue on
+    // `next`'s. Returns when something switches back to `save`.
+    ".global context_switch",
+    "context_switch:",
     "push rbx",
     "push rbp",
     "push r12",
     "push r13",
     "push r14",
     "push r15",
-    "mov [rip + KERNEL_RSP], rsp",
-    "push {udata}",
-    "push rsi",
-    "push 0x2",
-    "push {ucode}",
-    "push rdi",
-    // a program starts with clean registers
-    "xor eax, eax", "xor ebx, ebx", "xor ecx, ecx", "xor edx, edx", "xor esi, esi", "xor edi, edi",
-    "xor ebp, ebp", "xor r8d, r8d", "xor r9d, r9d", "xor r10d, r10d", "xor r11d, r11d",
-    "xor r12d, r12d", "xor r13d, r13d", "xor r14d, r14d", "xor r15d, r15d",
-    "mov ax, {udata}",
-    "mov ds, ax",
-    "mov es, ax",
-    "xor eax, eax",
-    "iretq",
-    // exit_to_kernel(code): back to enter_user's caller, which gets `code`
-    ".global exit_to_kernel",
-    "exit_to_kernel:",
-    "mov rsp, [rip + KERNEL_RSP]",
-    "mov ax, {kdata}",
-    "mov ds, ax",
-    "mov es, ax",
-    "mov rax, rdi",
+    "mov [rdi], rsp",
+    "mov rsp, rsi",
     "pop r15",
     "pop r14",
     "pop r13",
@@ -347,18 +381,18 @@ global_asm!(
     "pop rbp",
     "pop rbx",
     "ret",
-    udata = const UDATA,
-    ucode = const UCODE,
-    kdata = const KDATA,
 );
 
 // The UEFI target's "C" is Microsoft's calling convention; the assembly above uses System V
 // (arguments in rdi, rsi).
 extern "sysv64" {
-    /// Run the current program from `rip` with stack `rsp` until it exits; its exit status.
-    pub fn enter_user(rip: u64, rsp: u64) -> i64;
-    /// Leave the running program for good.
-    pub fn exit_to_kernel(code: i64) -> !;
+    pub fn context_switch(save: *mut u64, next: u64);
+}
+
+/// Wait for an interrupt (with interrupts on just for the wait).
+pub fn wait_for_interrupt() {
+    // SAFETY: sti; hlt is the usual idle sequence; interrupts go off again after.
+    unsafe { asm!("sti", "hlt", "cli", options(nomem, nostack)) };
 }
 
 pub fn halt() -> ! {

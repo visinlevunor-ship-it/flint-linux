@@ -240,6 +240,43 @@ pub fn free_lower_half(pml4: u64) {
     }
 }
 
+/// fork: a new address space with a copy of every program page of `parent`.
+pub fn clone_user(parent: u64) -> u64 {
+    let child = new_address_space();
+    // SAFETY: walking our own tables; pages are copied through the physical mapping.
+    unsafe {
+        for i in 0..256usize {
+            let e4 = *table(parent).add(i);
+            if e4 & P_PRESENT == 0 {
+                continue;
+            }
+            for j in 0..512usize {
+                let e3 = *table(e4 & ADDR_MASK).add(j);
+                if e3 & P_PRESENT == 0 || e3 & P_HUGE != 0 {
+                    continue;
+                }
+                for k in 0..512usize {
+                    let e2 = *table(e3 & ADDR_MASK).add(k);
+                    if e2 & P_PRESENT == 0 || e2 & P_HUGE != 0 {
+                        continue;
+                    }
+                    for l in 0..512usize {
+                        let e1 = *table(e2 & ADDR_MASK).add(l);
+                        if e1 & P_PRESENT == 0 || e1 & P_USER == 0 {
+                            continue;
+                        }
+                        let virt = ((i as u64) << 39) | ((j as u64) << 30) | ((k as u64) << 21) | ((l as u64) << 12);
+                        let f = alloc_frame();
+                        ptr::copy_nonoverlapping(phys_to_virt(e1 & ADDR_MASK), phys_to_virt(f), PAGE as usize);
+                        map_page(child, virt, f, e1 & 0xFFF & !P_PRESENT);
+                    }
+                }
+            }
+        }
+    }
+    child
+}
+
 static mut KERNEL_PML4: u64 = 0;
 static mut IMAGE: (u64, u64) = (0, 0);
 
@@ -306,7 +343,7 @@ pub fn switch_to(pml4: u64) {
 // ---------------------------------------------------------------------------------------
 // Kernel heap: a first-fit free list over one contiguous block.
 
-pub const HEAP_PAGES: u64 = 4096; // 16 MiB
+pub const HEAP_PAGES: u64 = 8192; // 32 MiB
 
 struct Block {
     size: usize,

@@ -59,7 +59,7 @@ cp "$BASE" "$STAGE/FLINT/BASE.IMG"
 cp "$BOOTCFG" "$STAGE/FLINT/BOOT.CFG"
 if [ -f "$FLINTKERNEL" ]; then
     cp "$FLINTKERNEL" "$STAGE/FLINT/FLINTK.EFI"
-    printf '\nentry Flint kernel (experimental: runs a few programs, then stops)\n  kernel \\FLINT\\FLINTK.EFI\n  initrd \\FLINT\\BASE.IMG\n' >> "$STAGE/FLINT/BOOT.CFG"
+    printf '\nentry Flint kernel (experimental: a shell, files in RAM only)\n  kernel \\FLINT\\FLINTK.EFI\n  initrd \\FLINT\\BASE.IMG\n' >> "$STAGE/FLINT/BOOT.CFG"
 fi
 # Drivers: the early ones in RAM (EARLY.IMG), all of them as files on the partition.
 "$MKIMAGE" drivers "$DRIVERS" "$LINUX/kernel" "$LINUX/firmware/lib/firmware" \

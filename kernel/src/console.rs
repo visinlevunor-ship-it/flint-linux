@@ -51,6 +51,9 @@ pub struct Framebuffer {
     row: usize,
     cols: usize,
     rows: usize,
+    esc: u8, // 0 none, 1 after ESC, 2 in ESC [
+    params: [u16; 4],
+    nparams: usize,
 }
 
 pub static mut FB: Option<Framebuffer> = None;
@@ -63,7 +66,7 @@ impl Framebuffer {
         let scale = if width >= 2400 { 2 } else { 1 };
         let cols = width / (font::WIDTH * scale);
         let rows = height / (font::HEIGHT * scale);
-        Framebuffer { base, width, height, stride, bgr, scale, col: 0, row: 0, cols, rows }
+        Framebuffer { base, width, height, stride, bgr, scale, col: 0, row: 0, cols, rows, esc: 0, params: [0; 4], nparams: 0 }
     }
 
     /// (rows, columns) of text
@@ -139,6 +142,101 @@ impl Framebuffer {
         }
     }
 
+    /// Clear cells [c0, c1) of text row `row`.
+    fn clear_cells(&mut self, row: usize, c0: usize, c1: usize) {
+        let bg = self.pixel(BG);
+        let s = self.scale;
+        for y in row * font::HEIGHT * s..(row + 1) * font::HEIGHT * s {
+            for x in c0 * font::WIDTH * s..(c1 * font::WIDTH * s).min(self.width) {
+                // SAFETY: inside the screen.
+                unsafe { self.base.add(y * self.stride + x).write_volatile(bg) };
+            }
+        }
+    }
+
+    fn csi(&mut self, cmd: u8) {
+        let p = |i: usize, d: u16| -> usize {
+            let v = if i < self.nparams { self.params[i] } else { 0 };
+            (if v == 0 { d } else { v }) as usize
+        };
+        match cmd {
+            b'K' => match if self.nparams > 0 { self.params[0] } else { 0 } {
+                0 => self.clear_cells(self.row, self.col, self.cols),
+                1 => self.clear_cells(self.row, 0, self.col + 1),
+                _ => self.clear_cells(self.row, 0, self.cols),
+            },
+            b'J' => {
+                let mode = if self.nparams > 0 { self.params[0] } else { 0 };
+                if mode >= 2 {
+                    self.clear();
+                } else {
+                    self.clear_cells(self.row, self.col, self.cols);
+                    for r in self.row + 1..self.rows {
+                        self.clear_cells(r, 0, self.cols);
+                    }
+                }
+            }
+            b'H' | b'f' => {
+                self.row = (p(0, 1) - 1).min(self.rows - 1);
+                self.col = (p(1, 1) - 1).min(self.cols - 1);
+            }
+            b'A' => self.row = self.row.saturating_sub(p(0, 1)),
+            b'B' => self.row = (self.row + p(0, 1)).min(self.rows - 1),
+            b'C' => self.col = (self.col + p(0, 1)).min(self.cols - 1),
+            b'D' => self.col = self.col.saturating_sub(p(0, 1)),
+            b'G' => self.col = (p(0, 1) - 1).min(self.cols - 1),
+            _ => {}
+        }
+    }
+
+    /// One byte of terminal output.
+    pub fn feed(&mut self, b: u8) {
+        match self.esc {
+            1 => {
+                if b == b'[' {
+                    self.esc = 2;
+                    self.params = [0; 4];
+                    self.nparams = 0;
+                } else {
+                    self.esc = 0;
+                }
+                return;
+            }
+            2 => {
+                match b {
+                    b'0'..=b'9' => {
+                        if self.nparams == 0 {
+                            self.nparams = 1;
+                        }
+                        let i = self.nparams - 1;
+                        if i < 4 {
+                            self.params[i] = self.params[i].saturating_mul(10).saturating_add((b - b'0') as u16);
+                        }
+                    }
+                    b';' => {
+                        if self.nparams == 0 {
+                            self.nparams = 1;
+                        }
+                        self.nparams = (self.nparams + 1).min(4);
+                    }
+                    b'?' | b'>' | b'=' => {}
+                    0x40..=0x7E => {
+                        self.esc = 0;
+                        self.csi(b);
+                    }
+                    _ => self.esc = 0,
+                }
+                return;
+            }
+            _ => {}
+        }
+        if b == 0x1B {
+            self.esc = 1;
+            return;
+        }
+        self.put(b);
+    }
+
     pub fn put(&mut self, b: u8) {
         match b {
             b'\n' => self.newline(),
@@ -161,29 +259,19 @@ impl Framebuffer {
     }
 }
 
-/// Bytes from a program or the kernel: to the serial port and the screen. Escape sequences
-/// (colors) are dropped on the screen.
+/// Bytes from a program or the kernel: to the serial port as they are, and to the screen
+/// through a small terminal: the cursor and erase sequences line editors use (ESC [ ... K, J,
+/// H, A, B, C, D); colors and the rest are dropped.
 pub fn write_bytes(bytes: &[u8]) {
-    static mut ESC: bool = false;
     for &b in bytes {
         if b == b'\n' {
             serial_byte(b'\r');
         }
         serial_byte(b);
-        // SAFETY: one CPU, interrupts off: nothing else touches FB or ESC meanwhile.
+        // SAFETY: one CPU, interrupts off in the kernel: nothing else touches FB meanwhile.
         unsafe {
-            if ESC {
-                if b.is_ascii_alphabetic() {
-                    ESC = false;
-                }
-                continue;
-            }
-            if b == 0x1B {
-                ESC = true;
-                continue;
-            }
             if let Some(fb) = (*core::ptr::addr_of_mut!(FB)).as_mut() {
-                fb.put(b);
+                fb.feed(b);
             }
         }
     }

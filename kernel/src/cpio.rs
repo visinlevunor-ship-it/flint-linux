@@ -99,53 +99,6 @@ pub fn load(img: &'static [u8]) -> usize {
     n
 }
 
-pub const ENOENT: i64 = 2;
-pub const ENOTDIR: i64 = 20;
-pub const ELOOP: i64 = 40;
-
-/// The file `path` names (relative to `cwd`), following symbolic links; the last one only if
-/// `follow`. Returns its canonical path.
-pub fn resolve(cwd: &str, path: &str, follow: bool) -> Result<String, i64> {
-    let mut queue: Vec<String> = Vec::new();
-    // components to visit, in reverse so pop() takes the next one
-    let push_path = |q: &mut Vec<String>, p: &str| {
-        for c in p.split('/').rev() {
-            q.push(c.to_string());
-        }
-    };
-    let mut done: Vec<String> = if path.starts_with('/') { Vec::new() } else { cwd.split('/').filter(|c| !c.is_empty()).map(|c| c.to_string()).collect() };
-    push_path(&mut queue, path);
-    let mut links = 0;
-    while let Some(c) = queue.pop() {
-        if c.is_empty() || c == "." {
-            continue;
-        }
-        if c == ".." {
-            done.pop();
-            continue;
-        }
-        done.push(c);
-        let p = done.join("/");
-        let last = queue.iter().all(|c| c.is_empty() || c == ".");
-        let Some(node) = files().get(&p) else { return Err(ENOENT) };
-        if node.is_link() && (!last || follow) {
-            links += 1;
-            if links > 40 {
-                return Err(ELOOP);
-            }
-            done.pop();
-            let target = core::str::from_utf8(node.data).unwrap_or("");
-            if target.starts_with('/') {
-                done.clear();
-            }
-            push_path(&mut queue, target);
-        } else if !last && !node.is_dir() {
-            return Err(ENOTDIR);
-        }
-    }
-    Ok(done.join("/"))
-}
-
 /// The entries of directory `dir` (canonical path): (name, file).
 pub fn list(dir: &str) -> Vec<(&'static str, &'static Node)> {
     let prefix = if dir.is_empty() { String::new() } else { alloc::format!("{dir}/") };
