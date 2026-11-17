@@ -17,6 +17,8 @@
 #   DRIVERS   driver selection   (default image/drivers.conf)
 #   SIZE      image size in MiB  (default 512; the free space holds saved settings)
 #   HOSTBIN   flint-mkimage for this machine                         (default target/release)
+#   FLINTKERNEL  the Flint kernel, added to the boot menu as an experimental entry when it
+#             is built (default kernel/target/x86_64-unknown-uefi/release/flint-kernel.efi)
 #
 # POSIX sh only: runs on FreeBSD and Linux hosts.
 set -eu
@@ -30,6 +32,7 @@ BOOTCFG=${BOOTCFG:-$ROOT/image/boot.cfg}
 DRIVERS=${DRIVERS:-$ROOT/image/drivers.conf}
 SIZE=${SIZE:-512}
 HOSTBIN=${HOSTBIN:-$ROOT/target/release}
+FLINTKERNEL=${FLINTKERNEL:-$ROOT/kernel/target/x86_64-unknown-uefi/release/flint-kernel.efi}
 MKIMAGE="$HOSTBIN/flint-mkimage"
 
 [ -x "$MKIMAGE" ] || { echo "missing $MKIMAGE (build with: cargo build --release -p flint-mkimage)" >&2; exit 1; }
@@ -54,6 +57,10 @@ cp "$KERNEL" "$STAGE/FLINT/KERNEL"
 echo "${KERNEL##*/vmlinuz-}" > "$STAGE/FLINT/RELEASE"
 cp "$BASE" "$STAGE/FLINT/BASE.IMG"
 cp "$BOOTCFG" "$STAGE/FLINT/BOOT.CFG"
+if [ -f "$FLINTKERNEL" ]; then
+    cp "$FLINTKERNEL" "$STAGE/FLINT/FLINTK.EFI"
+    printf '\nentry Flint kernel (experimental: runs a few programs, then stops)\n  kernel \\FLINT\\FLINTK.EFI\n  initrd \\FLINT\\BASE.IMG\n' >> "$STAGE/FLINT/BOOT.CFG"
+fi
 # Drivers: the early ones in RAM (EARLY.IMG), all of them as files on the partition.
 "$MKIMAGE" drivers "$DRIVERS" "$LINUX/kernel" "$LINUX/firmware/lib/firmware" \
     "$STAGE/FLINT/EARLY.IMG" "$STAGE/FLINT/DRIVERS"

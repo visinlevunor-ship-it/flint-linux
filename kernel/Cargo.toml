@@ -1,0 +1,27 @@
+# The Flint kernel. A workspace of its own: it is built for the UEFI target, and flint-boot
+# starts it the way it starts Linux (LoadImage/StartImage, the base image through LoadFile2).
+#
+#   kernel/build.sh   -> kernel/target/x86_64-unknown-uefi/release/flint-kernel.efi
+[package]
+name = "flint-kernel"
+version = "0.1.0"
+edition = "2021"
+description = "The Flint kernel: boots from UEFI and runs Linux x86-64 programs through Linux's system calls"
+license = "MIT"
+
+[[bin]]
+name = "flint-kernel"
+path = "src/main.rs"
+test = false
+bench = false
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = true
+codegen-units = 1
+
+[workspace]

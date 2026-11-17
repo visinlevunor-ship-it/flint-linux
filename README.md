@@ -110,6 +110,7 @@ To boot without saving anything to the stick, pick **live** in the boot menu.
 | **Crypto** | SHA-2, HMAC, PBKDF2, AES-GCM (AES-NI), X25519, Ed25519, HKDF, TLS 1.3, all in pure Rust |
 | **C library** | `flint-libc`: start-up, malloc, files, threads, signals, processes, sockets, DNS, math, unwinder |
 | **glibc programs** | `flint-glibc`: a dynamic loader and `libc.so.6` in one, on flint-libc, so binaries built for glibc (Firefox, Java, Minecraft) run |
+| **Kernel (experimental)** | the Flint kernel: Rust, boots from flint-boot, runs Flint's programs through Linux's system calls. Early: see [docs/kernel.md](docs/kernel.md) |
 
 ## Status
 
@@ -130,6 +131,7 @@ Not there yet:
 - [Packages](docs/packages.md): `pkg`, running your own signed repository, how packages are kept safe
 - [flint-packages](https://github.com/visinlevunor-ship-it/flint-packages): the package repository, and the recipes (ports) that build it
 - [Testing](docs/testing.md): unit, pty and QEMU tests
+- [The Flint kernel](docs/kernel.md): Flint's own kernel, what it runs today and what comes next
 
 ## Support
 
