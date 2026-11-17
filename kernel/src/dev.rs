@@ -56,6 +56,36 @@ fn eoi(line: u8) {
 /// Devices that are polled rather than interrupting (called while idle).
 pub fn poll_devices() {}
 
+/// Restart the machine: the keyboard controller's reset line, then the PCI reset register.
+pub fn reboot() -> ! {
+    crate::kprintln!("[kernel] restarting");
+    // SAFETY: reset requests to the i8042 and the chipset's reset control register.
+    unsafe {
+        for _ in 0..100_000 {
+            if inb(0x64) & 2 == 0 {
+                break;
+            }
+        }
+        outb(0x64, 0xFE);
+        outb(0xCF9, 0x06);
+    }
+    crate::arch::halt()
+}
+
+/// Switch off: QEMU's and Bochs' power-off ports; on other machines (without ACPI support
+/// yet) the machine just stops.
+pub fn power_off() -> ! {
+    crate::kprintln!("[kernel] switching off");
+    // SAFETY: power-off requests on the emulators' ports; harmless elsewhere.
+    unsafe {
+        crate::pci::outw(0x604, 0x2000);
+        crate::pci::outw(0xB004, 0x2000);
+        crate::pci::outw(0x4004, 0x3400);
+    }
+    crate::kprintln!("[kernel] the machine can be switched off now");
+    crate::arch::halt()
+}
+
 /// Bytes waiting on the serial port.
 pub fn poll_serial() {
     // SAFETY: COM1's registers.

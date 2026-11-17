@@ -194,6 +194,7 @@ fn schedule() {
             None => {
                 crate::dev::poll_serial();
                 crate::dev::poll_devices();
+                crate::persist::tick();
                 arch::wait_for_interrupt();
             }
         }
@@ -512,6 +513,7 @@ fn do_exit(status: i32, group: bool) -> ! {
             }
         }
         if tgid == 1 {
+            crate::persist::save();
             crate::kprintln!("\n[kernel] the first program ended (status {:#x}); nothing left to run. The machine can be switched off.", st);
             arch::halt();
         }

@@ -31,10 +31,17 @@ pub struct MemNode {
     pub data: Vec<u8>,
 }
 
+/// A file of the data partition (ext4): its inode number and inode.
+pub struct ExtNode {
+    pub n: u64,
+    pub inode: crate::ext4::Inode,
+}
+
 #[derive(Clone)]
 pub enum Node {
     Base(&'static cpio::Node),
     Mem(Rc<RefCell<MemNode>>),
+    Ext(Rc<ExtNode>),
 }
 
 impl Node {
@@ -42,6 +49,7 @@ impl Node {
         match self {
             Node::Base(n) => n.mode,
             Node::Mem(m) => m.borrow().mode,
+            Node::Ext(e) => e.inode.mode,
         }
     }
     pub fn is_dir(&self) -> bool {
@@ -54,30 +62,35 @@ impl Node {
         match self {
             Node::Base(n) => n.ino,
             Node::Mem(m) => m.borrow().ino,
+            Node::Ext(e) => e.n | 1 << 40,
         }
     }
     pub fn mtime(&self) -> u64 {
         match self {
             Node::Base(n) => n.mtime,
             Node::Mem(m) => m.borrow().mtime,
+            Node::Ext(e) => e.inode.mtime,
         }
     }
     pub fn rdev(&self) -> u64 {
         match self {
             Node::Base(_) => 0,
             Node::Mem(m) => m.borrow().rdev,
+            Node::Ext(e) => e.inode.rdev,
         }
     }
     pub fn size(&self) -> usize {
         match self {
             Node::Base(n) => n.data.len(),
             Node::Mem(m) => m.borrow().data.len(),
+            Node::Ext(e) => e.inode.size as usize,
         }
     }
     pub fn link_target(&self) -> String {
         match self {
             Node::Base(n) => String::from_utf8_lossy(n.data).into_owned(),
             Node::Mem(m) => String::from_utf8_lossy(&m.borrow().data).into_owned(),
+            Node::Ext(e) => data_fs().map(|f| f.link_target(&e.inode)).unwrap_or_default(),
         }
     }
     /// Bytes from `pos` into `out`; how many.
@@ -91,6 +104,7 @@ impl Node {
         match self {
             Node::Base(n) => copy(n.data, out),
             Node::Mem(m) => copy(&m.borrow().data, out),
+            Node::Ext(e) => data_fs().map(|f| f.read_at(&e.inode, pos as u64, out)).unwrap_or(0),
         }
     }
     /// The whole contents (for loading programs).
@@ -98,14 +112,87 @@ impl Node {
         match self {
             Node::Base(n) => n.data.to_vec(),
             Node::Mem(m) => m.borrow().data.clone(),
+            Node::Ext(e) => data_fs().map(|f| f.read_all(&e.inode)).unwrap_or_default(),
         }
     }
-    pub fn base_bytes(&self) -> Option<&'static [u8]> {
-        match self {
-            Node::Base(n) => Some(n.data),
-            Node::Mem(_) => None,
-        }
+}
+
+// ---------------------------------------------------------------------------------------
+// The data partition: Flint's overlay upper layer (root/upper on the ext4 "Flint data"
+// partition), read-only here, between the RAM layer and the base image.
+
+static mut DATA: Option<(crate::ext4::Ext4, u64)> = None;
+static mut DATA_CACHE: Option<BTreeMap<String, Option<u64>>> = None;
+
+pub fn set_data_layer(fs: crate::ext4::Ext4, upper: u64) {
+    // SAFETY: start-up.
+    unsafe { DATA = Some((fs, upper)) };
+}
+
+fn data_fs() -> Option<&'static crate::ext4::Ext4> {
+    // SAFETY: set once at start-up.
+    unsafe { (*core::ptr::addr_of!(DATA)).as_ref().map(|(f, _)| f) }
+}
+
+/// The data layer's inode for `path`, if any (cached: the layer does not change under us).
+fn data_inode(path: &str) -> Option<u64> {
+    // SAFETY: set once at start-up; one CPU.
+    let (fs, upper) = unsafe { (*core::ptr::addr_of!(DATA)).as_ref()? };
+    let cache = unsafe { (*core::ptr::addr_of_mut!(DATA_CACHE)).get_or_insert_with(BTreeMap::new) };
+    if let Some(v) = cache.get(path) {
+        return *v;
     }
+    let n = if path.is_empty() { Some(*upper) } else { fs.walk(*upper, path) };
+    if cache.len() > 50_000 {
+        cache.clear();
+    }
+    cache.insert(path.to_string(), n);
+    n
+}
+
+/// In the data layer: Some(Some(node)) a file, Some(None) a whiteout (deleted there),
+/// None nothing.
+fn data_lookup(path: &str) -> Option<Option<Node>> {
+    let fs = data_fs()?;
+    let n = data_inode(path)?;
+    let inode = fs.inode(n)?;
+    // overlayfs marks deleted files with a 0/0 character device
+    if inode.mode & S_IFMT == S_IFCHR && inode.rdev == 0 {
+        return Some(None);
+    }
+    Some(Some(Node::Ext(Rc::new(ExtNode { n, inode }))))
+}
+
+fn data_list(dir: &str) -> Vec<(String, Option<Node>)> {
+    let Some(fs) = data_fs() else { return Vec::new() };
+    let Some(n) = data_inode(dir) else { return Vec::new() };
+    let Some(ino) = fs.inode(n) else { return Vec::new() };
+    if ino.mode & S_IFMT != S_IFDIR {
+        return Vec::new();
+    }
+    fs.list(&ino)
+        .into_iter()
+        .filter_map(|(name, cn)| {
+            let child = fs.inode(cn)?;
+            if child.mode & S_IFMT == S_IFCHR && child.rdev == 0 {
+                return Some((name, None));
+            }
+            Some((name, Some(Node::Ext(Rc::new(ExtNode { n: cn, inode: child })))))
+        })
+        .collect()
+}
+
+static mut DIRTY: bool = false;
+
+/// The RAM layer changed: it should be saved.
+pub fn mark_dirty() {
+    // SAFETY: one CPU.
+    unsafe { DIRTY = true };
+}
+
+pub fn take_dirty() -> bool {
+    // SAFETY: one CPU.
+    unsafe { core::mem::replace(&mut *core::ptr::addr_of_mut!(DIRTY), false) }
 }
 
 /// path -> file in RAM, or None: deleted (hides the base image's file)
@@ -154,8 +241,17 @@ pub fn lookup(path: &str) -> Option<Node> {
     match layer().get(path) {
         Some(Some(m)) => Some(Node::Mem(m.clone())),
         Some(None) => None,
-        None => cpio::files().get(path).map(Node::Base),
+        None => match data_lookup(path) {
+            Some(n) => n,
+            None => cpio::files().get(path).map(Node::Base),
+        },
     }
+}
+
+/// Does a lower layer (the data partition or the base image) have `path`? Deleting it then
+/// needs a whiteout.
+fn in_lower(path: &str) -> bool {
+    matches!(data_lookup(path), Some(Some(_))) || (data_lookup(path).is_none() && cpio::files().contains_key(path))
 }
 
 /// The canonical path `path` names (relative to `cwd`), following symbolic links; the last one
@@ -238,6 +334,16 @@ pub fn list(dir: &str) -> Vec<(String, Node)> {
     for (name, n) in cpio::list(dir) {
         out.insert(name.to_string(), Node::Base(n));
     }
+    for (name, n) in data_list(dir) {
+        match n {
+            Some(n) => {
+                out.insert(name, n);
+            }
+            None => {
+                out.remove(&name);
+            }
+        }
+    }
     let prefix = if dir.is_empty() { String::new() } else { alloc::format!("{dir}/") };
     for (k, v) in layer().range(prefix.clone()..) {
         if !k.starts_with(&prefix) {
@@ -269,18 +375,20 @@ pub fn writable(path: &str, create: bool, mode: u32) -> Result<Rc<RefCell<MemNod
             }
             Ok(m)
         }
-        Some(Node::Base(b)) => {
-            if b.mode & S_IFMT == S_IFDIR {
+        Some(n @ (Node::Base(_) | Node::Ext(_))) => {
+            if n.is_dir() {
                 return Err(EISDIR);
             }
-            let m = mem(b.mode, b.data.to_vec(), 0);
+            let m = mem(n.mode(), n.bytes(), 0);
             layer().insert(path.to_string(), Some(m.clone()));
+            mark_dirty();
             Ok(m)
         }
         None if create => {
             check_parent(path)?;
             let m = mem(S_IFREG | (mode & 0o7777), Vec::new(), 0);
             layer().insert(path.to_string(), Some(m.clone()));
+            mark_dirty();
             Ok(m)
         }
         None => Err(ENOENT),
@@ -293,6 +401,7 @@ pub fn mkdir(path: &str, mode: u32) -> Result<(), i64> {
     }
     check_parent(path)?;
     layer().insert(path.to_string(), Some(mem(S_IFDIR | (mode & 0o7777), Vec::new(), 0)));
+    mark_dirty();
     Ok(())
 }
 
@@ -302,6 +411,7 @@ pub fn symlink(target: &str, path: &str) -> Result<(), i64> {
     }
     check_parent(path)?;
     layer().insert(path.to_string(), Some(mem(S_IFLNK | 0o777, target.as_bytes().to_vec(), 0)));
+    mark_dirty();
     Ok(())
 }
 
@@ -330,12 +440,13 @@ pub fn remove(path: &str, dir: bool) -> Result<(), i64> {
     } else if n.is_dir() {
         return Err(EISDIR);
     }
-    // hide the base image's file, or just drop the RAM one
-    if cpio::files().contains_key(path) {
+    // hide a lower layer's file, or just drop the RAM one
+    if in_lower(path) {
         layer().insert(path.to_string(), None);
     } else {
         layer().remove(path);
     }
+    mark_dirty();
     Ok(())
 }
 
@@ -375,13 +486,13 @@ pub fn rename(from: &str, to: &str) -> Result<(), i64> {
     for (src, dst) in &moves {
         let node = match lookup(src) {
             Some(Node::Mem(m)) => m,
-            Some(Node::Base(b)) => mem(b.mode, b.data.to_vec(), 0),
+            Some(n) => mem(n.mode(), n.bytes(), 0),
             None => continue,
         };
         nodes.push((dst.clone(), node));
     }
     for (src, _) in moves.iter().rev() {
-        if cpio::files().contains_key(src.as_str()) {
+        if in_lower(src) {
             layer().insert(src.clone(), None);
         } else {
             layer().remove(src.as_str());
@@ -390,6 +501,7 @@ pub fn rename(from: &str, to: &str) -> Result<(), i64> {
     for (dst, node) in nodes {
         layer().insert(dst, Some(node));
     }
+    mark_dirty();
     Ok(())
 }
 
@@ -397,12 +509,13 @@ pub fn chmod(path: &str, mode: u32) -> Result<(), i64> {
     let n = lookup(path).ok_or(ENOENT)?;
     let m = match n {
         Node::Mem(m) => m,
-        Node::Base(b) => {
-            let m = mem(b.mode, b.data.to_vec(), 0);
+        n => {
+            let m = mem(n.mode(), n.bytes(), 0);
             layer().insert(path.to_string(), Some(m.clone()));
             m
         }
     };
+    mark_dirty();
     let mut m = m.borrow_mut();
     m.mode = (m.mode & S_IFMT) | (mode & 0o7777);
     Ok(())
@@ -417,4 +530,77 @@ pub fn touch(path: &str, t: u64) {
 /// Bytes in the RAM layer (for sysinfo and the like).
 pub fn ram_bytes() -> usize {
     layer().values().flatten().map(|m| m.borrow().data.len()).sum()
+}
+
+/// Not kept between restarts: device files, /tmp, /run.
+fn volatile(path: &str) -> bool {
+    path == "dev" || path.starts_with("dev/") || path == "tmp" || path.starts_with("tmp/") || path == "run" || path.starts_with("run/") || path == "proc" || path == "sys"
+}
+
+fn cpio_entry(out: &mut Vec<u8>, name: &str, mode: u32, mtime: u64, data: &[u8]) {
+    let hdr = alloc::format!(
+        "070701{:08X}{:08X}{:08X}{:08X}{:08X}{:08X}{:08X}{:08X}{:08X}{:08X}{:08X}{:08X}{:08X}",
+        0, mode, 0, 0, 1, mtime as u32, data.len(), 0, 0, 0, 0, name.len() + 1, 0
+    );
+    out.extend_from_slice(hdr.as_bytes());
+    out.extend_from_slice(name.as_bytes());
+    out.push(0);
+    while out.len() % 4 != 0 {
+        out.push(0);
+    }
+    out.extend_from_slice(data);
+    while out.len() % 4 != 0 {
+        out.push(0);
+    }
+}
+
+/// The RAM layer as a cpio archive (deleted files as 0/0 character devices, as overlayfs
+/// marks them).
+pub fn export() -> Vec<u8> {
+    let mut out = Vec::new();
+    for (path, v) in layer().iter() {
+        if volatile(path) {
+            continue;
+        }
+        match v {
+            Some(m) => {
+                let m = m.borrow();
+                cpio_entry(&mut out, path, m.mode, m.mtime, &m.data);
+            }
+            None => cpio_entry(&mut out, path, S_IFCHR, 0, &[]),
+        }
+    }
+    cpio_entry(&mut out, "TRAILER!!!", 0, 0, &[]);
+    out
+}
+
+/// Put back a RAM layer saved with export().
+pub fn import(img: &[u8]) -> usize {
+    let mut off = 0usize;
+    let mut n = 0;
+    let hex = |b: &[u8]| core::str::from_utf8(b).ok().and_then(|s| u64::from_str_radix(s, 16).ok()).unwrap_or(0);
+    while off + 110 <= img.len() && &img[off..off + 6] == b"070701" {
+        let h = &img[off..off + 110];
+        let field = |i: usize| hex(&h[6 + i * 8..14 + i * 8]);
+        let mode = field(1) as u32;
+        let mtime = field(5);
+        let size = field(6) as usize;
+        let namesize = field(11) as usize;
+        let name_start = off + 110;
+        let Some(name) = img.get(name_start..name_start + namesize.saturating_sub(1)) else { break };
+        let data_start = (name_start + namesize + 3) & !3;
+        let Some(data) = img.get(data_start..data_start + size) else { break };
+        off = (data_start + size + 3) & !3;
+        let name = String::from_utf8_lossy(name).into_owned();
+        if name == "TRAILER!!!" {
+            break;
+        }
+        if mode == S_IFCHR && size == 0 {
+            layer().insert(name, None);
+        } else {
+            layer().insert(name, Some(Rc::new(RefCell::new(MemNode { mode, ino: new_ino(), mtime, rdev: 0, data: data.to_vec() }))));
+        }
+        n += 1;
+    }
+    n
 }

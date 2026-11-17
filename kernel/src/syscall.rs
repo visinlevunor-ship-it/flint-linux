@@ -459,11 +459,12 @@ fn write(fd: u64, buf: u64, len: u64) -> Result<i64, i64> {
                 }
                 m.data[at..at + data.len()].copy_from_slice(data);
                 m.mtime = vfs::now();
+                vfs::mark_dirty();
                 drop(m);
                 f.pos = at + data.len();
                 return Ok(len as i64);
             }
-            Kind::File(Node::Base(_)) | Kind::Dir(_) | Kind::PipeR(_) => return Err(EBADF),
+            Kind::File(Node::Base(_) | Node::Ext(_)) | Kind::Dir(_) | Kind::PipeR(_) => return Err(EBADF),
             Kind::PipeW(p) => {
                 let mut p = p.borrow_mut();
                 if p.readers == 0 {
@@ -1187,7 +1188,23 @@ fn handle(f: &mut SyscallFrame) -> Result<i64, i64> {
                 _ => Err(EINVAL),
             }
         }
-        74 | 75 | 162 => Ok(0), // fsync, fdatasync, sync: everything is in RAM
+        74 | 75 | 162 => {
+            // fsync, fdatasync, sync: save the changes to the boot partition now
+            crate::persist::save();
+            Ok(0)
+        }
+        169 => {
+            // reboot(magic, magic2, cmd)
+            if a0 != 0xFEE1_DEAD {
+                return Err(EINVAL);
+            }
+            crate::persist::save();
+            match a2 {
+                0x0123_4567 => crate::dev::reboot(),
+                0x4321_FEDC | 0xCDEF_0123 => crate::dev::power_off(),
+                _ => Ok(0),
+            }
+        }
         76 | 77 => {
             // truncate, ftruncate
             let m = if f.rax == 76 {

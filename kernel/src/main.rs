@@ -16,10 +16,18 @@
 
 extern crate alloc;
 
+mod ahci;
 mod arch;
+mod block;
 mod console;
 mod cpio;
 mod dev;
+mod ext4;
+mod fat;
+mod nvme;
+mod pci;
+mod persist;
+mod virtio_blk;
 mod efi;
 mod font;
 mod mem;
@@ -235,6 +243,22 @@ extern "C" fn kmain() -> ! {
     let n = cpio::load(img);
     kprintln!("[kernel] base image: {} KiB, {} files", h.initrd_size / 1024, n);
 
+    // disks: NVMe, SATA (AHCI), virtio
+    let devs = pci::scan();
+    kprintln!("[kernel] PCI: {} devices", devs.len());
+    for d in &devs {
+        if let Some(disk) = nvme::probe(d, nvme_count(&devs, d)) {
+            block::register(disk);
+        }
+        for disk in ahci::probe(d, 0) {
+            block::register(disk);
+        }
+        if let Some(disk) = virtio_blk::probe(d, 0) {
+            block::register(disk);
+        }
+    }
+    block::scan_partitions();
+    persist::init(cmdline);
     vfs::init();
     dev::init();
 
@@ -255,6 +279,10 @@ extern "C" fn kmain() -> ! {
         kprintln!("[kernel] cannot start {}: error {}", path, e);
     }
     arch::halt()
+}
+
+fn nvme_count(all: &[pci::Dev], d: &pci::Dev) -> usize {
+    all.iter().take_while(|x| !(x.bus == d.bus && x.dev == d.dev && x.func == d.func)).filter(|x| x.class == 1 && x.subclass == 8).count()
 }
 
 /// A program named without a slash is looked up in PATH's directories.

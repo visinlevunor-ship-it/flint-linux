@@ -311,6 +311,31 @@ unsafe fn map_image(pml4: u64) {
     }
 }
 
+/// Device registers at `phys`: mapped uncached in the physical mapping (2 MiB pages) if they
+/// are not there yet. Returns their address in the kernel's view.
+pub fn map_mmio(phys: u64, size: u64) -> *mut u8 {
+    const P_PWT: u64 = 1 << 3;
+    const P_PCD: u64 = 1 << 4;
+    let mut p = phys & !((2 << 20) - 1);
+    // SAFETY: the kernel's own tables; the upper half is shared by every address space.
+    unsafe {
+        while p < phys + size {
+            let v = PHYS_OFF + p;
+            let pml4 = KERNEL_PML4;
+            let e4 = table(pml4).add(((v >> 39) & 511) as usize);
+            let pdpt = next_level(e4, false);
+            let e3 = table(pdpt).add(((v >> 30) & 511) as usize);
+            let pd = next_level(e3, false);
+            let e2 = table(pd).add(((v >> 21) & 511) as usize);
+            if *e2 & P_PRESENT == 0 {
+                *e2 = p | P_PRESENT | P_WRITE | P_HUGE | P_PCD | P_PWT;
+            }
+            p += 2 << 20;
+        }
+    }
+    phys_to_virt(phys)
+}
+
 /// The kernel image's range: programs must not be loaded over it.
 pub fn image_range() -> (u64, u64) {
     // SAFETY: set once during start-up.
