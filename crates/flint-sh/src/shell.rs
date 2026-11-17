@@ -262,7 +262,7 @@ impl Shell {
             Command::List(items) => self.exec_list(items),
             Command::Subshell(inner) => {
                 let pgrp = self.pgrp_new();
-                match self.fork_run(pgrp, true, -1, -1, &[], |sh| sh.exec(inner)) {
+                match self.fork_run(pgrp, true, -1, -1, &[], |sh| sh.exec_child(inner)) {
                     Ok(pid) => self.wait_foreground(&[pid], pid, "( ... )", None),
                     Err(e) => {
                         errln(&format!("fork: {e}"));
@@ -737,10 +737,27 @@ impl Shell {
         }
     }
 
+    /// Run `cmd` in a child the shell just forked (a background job, a subshell). When it
+    /// comes down to one external program, the child becomes that program instead of forking
+    /// again, so the job's PID ($!, kill, wait) is the program's own.
+    fn exec_child(&mut self, cmd: &Command) -> i32 {
+        let st = match cmd {
+            Command::Simple(s) => self.exec_simple(s, true),
+            Command::Pipeline { negate: false, stages } if stages.len() == 1 => self.exec_child(&stages[0]),
+            Command::AndOr(first, rest) if rest.is_empty() => self.exec_child(first),
+            Command::List(items) if items.len() == 1 && !items[0].background => self.exec_child(&items[0].cmd),
+            Command::Subshell(inner) | Command::Group(inner) => self.exec_child(inner),
+            Command::Redirected(inner, redirs) => self.with_redirs(redirs, |sh| sh.exec_child(inner)),
+            _ => return self.exec(cmd),
+        };
+        self.last_status = st;
+        st
+    }
+
     fn exec_background(&mut self, cmd: &Command) -> i32 {
         let devnull = if self.interactive { -1 } else { open_file("/dev/null", libc::O_RDONLY).unwrap_or(-1) };
         let pgrp = self.pgrp_new();
-        let r = self.fork_run(pgrp, false, devnull, -1, &[], |sh| sh.exec(cmd));
+        let r = self.fork_run(pgrp, false, devnull, -1, &[], |sh| sh.exec_child(cmd));
         if devnull > 0 {
             // SAFETY: closing the parent's copy.
             unsafe { libc::close(devnull) };

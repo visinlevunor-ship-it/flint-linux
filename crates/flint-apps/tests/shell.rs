@@ -193,6 +193,15 @@ fn subshells_and_groups() {
 }
 
 #[test]
+fn background_pid_is_the_program() {
+    // $! must be the program itself, not a shell around it: killing it has to stop the
+    // program (startx stops the X server this way).
+    for job in ["sleep 30 > /dev/null 2>&1 &", "(sleep 30) &", "(exec sleep 30 > /dev/null) &"] {
+        check(&format!("{job} p=$!; sleep 0.3; cat /proc/$p/comm; kill $p; wait $p; echo $?"), "sleep\n143\n");
+    }
+}
+
+#[test]
 fn redirections() {
     let t = Tmp::new();
     assert_eq!(t.run("echo hi > f; cat f").stdout, "hi\n");
