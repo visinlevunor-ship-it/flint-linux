@@ -238,6 +238,12 @@ pub fn init() {
 
 /// The file at canonical `path` ("" is the root).
 pub fn lookup(path: &str) -> Option<Node> {
+    if path == "proc" || path.starts_with("proc/") {
+        return crate::procfs::lookup(path);
+    }
+    if path == "sys" || path.starts_with("sys/") {
+        return crate::procfs::sys_lookup(path);
+    }
     match layer().get(path) {
         Some(Some(m)) => Some(Node::Mem(m.clone())),
         Some(None) => None,
@@ -330,6 +336,12 @@ fn check_parent(path: &str) -> Result<(), i64> {
 
 /// The entries of directory `dir`: (name, file), sorted.
 pub fn list(dir: &str) -> Vec<(String, Node)> {
+    if dir == "proc" || dir.starts_with("proc/") {
+        return crate::procfs::list(dir);
+    }
+    if dir == "sys" || dir.starts_with("sys/") {
+        return crate::procfs::sys_list(dir);
+    }
     let mut out: BTreeMap<String, Node> = BTreeMap::new();
     for (name, n) in cpio::list(dir) {
         out.insert(name.to_string(), Node::Base(n));

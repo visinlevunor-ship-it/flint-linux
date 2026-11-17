@@ -107,6 +107,17 @@ pub struct Proc {
     slice_end: u64,
     /// the exit status of the whole process (exit_group, or the first thread's exit)
     group_status: i32,
+    /// for /proc: the arguments (NUL-separated), the program's path, when it started, the
+    /// processor time it used, when it last got the processor
+    pub cmdline: Vec<u8>,
+    pub exe: String,
+    pub start_ns: u64,
+    pub cpu_ns: u64,
+    last_run: u64,
+    pub uid: u32,
+    pub gid: u32,
+    pub euid: u32,
+    pub egid: u32,
 }
 
 impl Proc {
@@ -122,6 +133,8 @@ static mut PROCS: Option<BTreeMap<i32, Box<Proc>>> = None;
 static mut CUR: i32 = 0;
 static mut NEXT_PID: i32 = 1;
 static mut BOOT_KSP: u64 = 0;
+/// processor time spent in programs (the rest is idle), for /proc/stat
+pub static mut BUSY_NS: u64 = 0;
 
 fn procs() -> &'static mut BTreeMap<i32, Box<Proc>> {
     // SAFETY: one CPU; the kernel never runs two things at once.
@@ -186,16 +199,35 @@ fn schedule() {
             .find(|(_, p)| p.state == State::Runnable)
             .map(|(pid, _)| *pid);
         match next {
-            Some(n) if n == cur => return,
+            Some(n) if n == cur => {
+                // back from idling: the clock runs for this task again
+                if let Some(p) = procs().get_mut(&cur) {
+                    if p.last_run == 0 {
+                        p.last_run = crate::syscall::now_ns();
+                    }
+                }
+                return;
+            }
             Some(n) => {
                 switch(cur, n);
                 return;
             }
             None => {
+                // idle: stop the current task's clock
+                if let Some(p) = procs().get_mut(&cur) {
+                    if p.last_run != 0 {
+                        let d = crate::syscall::now_ns().saturating_sub(p.last_run);
+                        p.cpu_ns += d;
+                        // SAFETY: one CPU.
+                        unsafe { BUSY_NS += d };
+                        p.last_run = 0;
+                    }
+                }
                 crate::dev::poll_serial();
                 crate::dev::poll_devices();
                 crate::persist::tick();
                 crate::net::idle();
+                crate::console::flush();
                 arch::wait_for_interrupt();
             }
         }
@@ -203,7 +235,17 @@ fn schedule() {
 }
 
 fn switch(from: i32, to: i32) {
+    let now = crate::syscall::now_ns();
+    if let Some(prev) = procs().get_mut(&from) {
+        if prev.last_run != 0 {
+            let d = now.saturating_sub(prev.last_run);
+            prev.cpu_ns += d;
+            // SAFETY: one CPU.
+            unsafe { BUSY_NS += d };
+        }
+    }
     let next = procs().get_mut(&to).unwrap();
+    next.last_run = now;
     let next_ksp = next.ksp;
     mem::switch_to(next.pml4());
     arch::set_kernel_stack(next.kstack_top());
@@ -355,6 +397,15 @@ pub fn start_init(path: &str, argv: &[String], envp: &[String], fds: Vec<Option<
         umask: 0o022,
         slice_end: 0,
         group_status: 0,
+        cmdline: argv.iter().flat_map(|a| a.bytes().chain([0])).collect(),
+        exe: alloc::format!("/{}", path.trim_start_matches('/')),
+        start_ns: crate::syscall::now_ns(),
+        cpu_ns: 0,
+        last_run: 0,
+        uid: 0,
+        gid: 0,
+        euid: 0,
+        egid: 0,
     });
     prime(&mut p, &user_frame(entry, sp));
     procs().insert(pid, p);
@@ -413,6 +464,15 @@ pub fn clone(frame: &SyscallFrame, flags: u64, stack: u64, ptid: u64, ctid: u64,
         umask: parent.umask,
         slice_end: 0,
         group_status: 0,
+        cmdline: parent.cmdline.clone(),
+        exe: parent.exe.clone(),
+        start_ns: crate::syscall::now_ns(),
+        cpu_ns: 0,
+        last_run: 0,
+        uid: parent.uid,
+        gid: parent.gid,
+        euid: parent.euid,
+        egid: parent.egid,
     });
     if flags & CLONE_PARENT_SETTID != 0 && ptid != 0 {
         if let Ok(s) = user_slice(ptid, 4) {
@@ -618,8 +678,9 @@ pub fn signal(pid: i32, sig: i32) -> bool {
     };
     let Some(t) = target.and_then(get) else { return get(pid).is_some() };
     let h = t.sig.borrow()[sig as usize].handler;
-    if sig != 9 && (h == 1 || (h == 0 && !fatal_by_default(sig))) {
-        return true; // ignored
+    // ignored, unless blocked: a blocked signal waits (sigtimedwait and sigwait take it)
+    if sig != 9 && t.blocked & (1 << (sig - 1)) == 0 && (h == 1 || (h == 0 && !fatal_by_default(sig))) {
+        return true;
     }
     t.pending |= 1 << (sig - 1);
     if t.state == State::Blocked {
@@ -638,6 +699,95 @@ pub fn signal_group(pgrp: i32, sig: i32) -> usize {
 
 pub fn all_tasks_of(tgid: i32) -> Vec<i32> {
     procs().values().filter(|t| t.tgid == tgid).map(|t| t.pid).collect()
+}
+
+/// For /proc: (pid, ppid, pgid, sid, state letter, name, threads, uid, start_ns, cpu_ns,
+/// address space root, cmdline, exe) of every live process.
+pub struct Info {
+    pub pid: i32,
+    pub ppid: i32,
+    pub pgid: i32,
+    pub sid: i32,
+    pub state: char,
+    pub name: String,
+    pub threads: usize,
+    pub uid: u32,
+    pub gid: u32,
+    pub start_ns: u64,
+    pub cpu_ns: u64,
+    pub pml4: u64,
+    pub brk: u64,
+    pub cmdline: Vec<u8>,
+    pub exe: String,
+    pub cwd: String,
+    pub fds: Vec<(usize, String)>,
+    pub blocked: u64,
+    pub pending: u64,
+}
+
+pub fn info(pid: i32) -> Option<Info> {
+    let p = procs().get(&pid)?;
+    if p.pid != p.tgid || !alive(p) {
+        return None;
+    }
+    let cur = self::pid();
+    let threads: Vec<&Box<Proc>> = procs().values().filter(|t| t.tgid == pid && alive(t)).collect();
+    let running = threads.iter().any(|t| t.pid == cur || t.state == State::Runnable);
+    let cpu = threads.iter().map(|t| t.cpu_ns).sum::<u64>() + if threads.iter().any(|t| t.pid == cur) && current().last_run != 0 { crate::syscall::now_ns().saturating_sub(current().last_run) } else { 0 };
+    let fds = p.fds.borrow().iter().enumerate().filter_map(|(i, f)| f.as_ref().map(|f| (i, f.file.try_borrow().map(|o| o.path.clone()).unwrap_or_else(|_| "/proc".into())))).collect();
+    Some(Info {
+        pid,
+        ppid: p.ppid,
+        pgid: p.pgid,
+        sid: p.sid,
+        state: if matches!(p.state, State::Zombie(_)) { 'Z' } else if running { 'R' } else { 'S' },
+        name: p.name.clone(),
+        threads: threads.len(),
+        uid: p.uid,
+        gid: p.gid,
+        start_ns: p.start_ns,
+        cpu_ns: cpu,
+        pml4: p.pml4(),
+        brk: p.mm.borrow().brk,
+        cmdline: p.cmdline.clone(),
+        exe: p.exe.clone(),
+        cwd: p.cwd.borrow().clone(),
+        fds,
+        blocked: p.blocked,
+        pending: p.pending,
+    })
+}
+
+/// setresuid / setresgid: None (or -1) keeps a value. Only root (effective) may pick any;
+/// others may only switch between their real and effective IDs.
+pub fn set_uids(real: Option<u32>, eff: Option<u32>) -> Result<(), i64> {
+    let p = current();
+    let ok = |v: u32| p.euid == 0 || v == p.uid || v == p.euid;
+    if !real.map_or(true, ok) || !eff.map_or(true, ok) {
+        return Err(1); // EPERM
+    }
+    if let Some(r) = real {
+        p.uid = r;
+    }
+    if let Some(e) = eff {
+        p.euid = e;
+    }
+    Ok(())
+}
+
+pub fn set_gids(real: Option<u32>, eff: Option<u32>) -> Result<(), i64> {
+    let p = current();
+    let ok = |v: u32| p.euid == 0 || v == p.gid || v == p.egid;
+    if !real.map_or(true, ok) || !eff.map_or(true, ok) {
+        return Err(1);
+    }
+    if let Some(r) = real {
+        p.gid = r;
+    }
+    if let Some(e) = eff {
+        p.egid = e;
+    }
+    Ok(())
 }
 
 pub fn all_pids() -> Vec<i32> {
@@ -1227,6 +1377,17 @@ pub fn replace(path: &str, argv: &[String], envp: &[String]) -> Result<(u64, u64
     p.mm = Rc::new(RefCell::new(mm)); // drops ours if no thread shares it
     mem::switch_to(p.pml4());
     p.name = path.rsplit('/').next().unwrap_or(path).to_string();
+    p.cmdline = argv.iter().flat_map(|a| a.bytes().chain([0])).collect();
+    p.exe = alloc::format!("/{}", path.trim_start_matches('/'));
+    // set-user-ID and set-group-ID programs (su, passwd): every file belongs to root
+    if let Some(n) = crate::vfs::lookup(path.trim_start_matches('/')) {
+        if n.mode() & 0o4000 != 0 {
+            p.euid = 0;
+        }
+        if n.mode() & 0o2000 != 0 {
+            p.egid = 0;
+        }
+    }
     p.fs_base = 0;
     // handlers do not survive exec; ignored signals stay ignored; a private table from now on
     let mut acts = *p.sig.borrow();

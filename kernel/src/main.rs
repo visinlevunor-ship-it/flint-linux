@@ -7,7 +7,7 @@
 //! system call entry. Programs are ordinary static Linux x86-64 executables; they talk to the
 //! kernel through Linux's system calls.
 //!
-//! Version 0.3 runs processes and threads with signal handlers, reads disks (NVMe, SATA,
+//! Version 0.4 starts Flint's init (and so the login), has /proc and a fast screen, runs processes and threads with signal handlers, reads disks (NVMe, SATA,
 //! virtio; the boot and data partitions) and keeps changes across restarts, drives PS/2 and
 //! USB keyboards, and has wired networking (e1000, virtio-net, USB network adapters and
 //! phones) with TCP/IP, DHCP and sockets. The first program is Flint's shell.
@@ -37,6 +37,7 @@ mod net;
 mod nic;
 mod sock;
 mod proc;
+mod procfs;
 mod syscall;
 mod tty;
 mod vfs;
@@ -50,9 +51,18 @@ use efi::*;
 #[global_allocator]
 static HEAP: mem::Heap = mem::Heap;
 
+static mut CMDLINE: &str = "";
+
+/// The kernel's command line.
+pub fn cmdline() -> &'static str {
+    // SAFETY: set once at start-up.
+    unsafe { CMDLINE }
+}
+
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     kprintln!("\n[kernel] PANIC: {}", info);
+    console::flush();
     arch::halt()
 }
 
@@ -222,6 +232,7 @@ extern "C" fn kmain() -> ! {
         mem::init_paging(limit.min(1 << 46), h.image_base, h.image_size);
         mem::init_heap();
         if h.fb != 0 {
+            mem::write_combining(h.fb, (h.fb_stride * h.fb_height * 4) as u64);
             let mut fb = console::Framebuffer::new(mem::phys_to_virt(h.fb) as *mut u32, h.fb_width, h.fb_height, h.fb_stride, h.fb_bgr);
             fb.clear();
             console::FB = Some(fb);
@@ -239,6 +250,8 @@ extern "C" fn kmain() -> ! {
         kprintln!("[kernel] screen: {}x{}", h.fb_width, h.fb_height);
     }
     kprintln!("[kernel] command line: {}", cmdline);
+    // SAFETY: start-up.
+    unsafe { CMDLINE = cmdline };
     if h.initrd == 0 {
         kprintln!("[kernel] no base image from the boot loader; nothing to run");
         arch::halt();
@@ -278,8 +291,10 @@ extern "C" fn kmain() -> ! {
         .iter()
         .map(|s| s.to_string())
         .collect();
-    // the first program: init=PROGRAM[,ARG...] as on Linux, else Flint's shell
-    let mut argv: Vec<String> = alloc::vec!["sh".to_string()];
+    // the first program: init=PROGRAM[,ARG...] as on Linux, else Flint's init (which starts
+    // the login), else Flint's shell
+    let default = if vfs::lookup("sbin/init").is_some() { "/sbin/init" } else { "sh" };
+    let mut argv: Vec<String> = alloc::vec![default.to_string()];
     for w in cmdline.split(' ') {
         if let Some(v) = w.strip_prefix("init=") {
             argv = v.split(',').filter(|a| !a.is_empty()).map(|a| a.to_string()).collect();
@@ -287,6 +302,7 @@ extern "C" fn kmain() -> ! {
     }
     let path = find_program(&argv[0]);
     kprintln!("[kernel] starting {}\n", path);
+    console::flush();
     if let Err(e) = proc::start_init(&path, &argv, &env, proc::console_fds()) {
         kprintln!("[kernel] cannot start {}: error {}", path, e);
     }

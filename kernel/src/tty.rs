@@ -150,6 +150,8 @@ pub fn input(mut b: u8) {
 
 /// read() from the terminal: None while it would have to wait.
 pub fn try_read(out: &mut [u8]) -> Option<usize> {
+    // whatever was printed before asking for input (a prompt) shows now
+    crate::console::flush();
     let t = tty();
     let canon = t.termios.lflag & ICANON != 0;
     if canon {

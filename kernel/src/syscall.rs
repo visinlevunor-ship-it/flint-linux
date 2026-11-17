@@ -621,7 +621,8 @@ fn brk(addr: u64) -> Result<i64, i64> {
 fn uname(buf: u64) -> Result<i64, i64> {
     let s = user_slice(buf, 65 * 6)?;
     s.fill(0);
-    let fields: [&str; 6] = ["Flint", "flint", env!("CARGO_PKG_VERSION"), "#1 Flint kernel", "x86_64", "(none)"];
+    let host = crate::procfs::hostname();
+    let fields: [&str; 6] = ["Flint", &host, env!("CARGO_PKG_VERSION"), "#1 Flint kernel", "x86_64", "(none)"];
     for (i, v) in fields.iter().enumerate() {
         s[i * 65..i * 65 + v.len()].copy_from_slice(v.as_bytes());
     }
@@ -1492,17 +1493,93 @@ fn handle(f: &mut SyscallFrame) -> Result<i64, i64> {
             }
             Ok((now_ns() / 10_000_000) as i64)
         } // times
-        102 | 104 | 107 | 108 => Ok(0), // root
-        105 | 106 | 113 | 114 | 116 | 117 | 119 => Ok(0), // setuid and friends
+        102 => Ok(current().uid as i64),
+        107 => Ok(current().euid as i64),
+        104 => Ok(current().gid as i64),
+        108 => Ok(current().egid as i64),
+        105 => {
+            // setuid: root sets every ID, others only the effective one
+            let u = a0 as u32;
+            if current().euid == 0 {
+                proc::set_uids(Some(u), Some(u))?;
+            } else {
+                proc::set_uids(None, Some(u))?;
+            }
+            Ok(0)
+        }
+        106 => {
+            let g = a0 as u32;
+            if current().euid == 0 {
+                proc::set_gids(Some(g), Some(g))?;
+            } else {
+                proc::set_gids(None, Some(g))?;
+            }
+            Ok(0)
+        }
+        113 | 117 => {
+            let id = |v: u64| if v as u32 == u32::MAX { None } else { Some(v as u32) };
+            proc::set_uids(id(a0), id(a1))?;
+            Ok(0)
+        }
+        114 | 119 => {
+            let id = |v: u64| if v as u32 == u32::MAX { None } else { Some(v as u32) };
+            proc::set_gids(id(a0), id(a1))?;
+            Ok(0)
+        }
+        116 => Ok(0), // setgroups
+        165 => {
+            // mount: the kernel's own filesystems are always there; nothing else can be mounted
+            let flags = a3;
+            if flags & 32 != 0 {
+                return Err(EINVAL); // remount: the root is like a ramfs
+            }
+            let fstype = if a2 != 0 { user_str(a2)? } else { String::new() };
+            match fstype.as_str() {
+                "proc" | "sysfs" | "devtmpfs" | "devpts" | "tmpfs" | "ramfs" | "cgroup2" | "securityfs" | "debugfs" | "configfs" | "efivarfs" => Ok(0),
+                _ => Err(19), // ENODEV
+            }
+        }
+        166 => Ok(0), // umount2
+        170 => {
+            let name = user_slice(a0, a1.min(64))?;
+            crate::procfs::set_hostname(&String::from_utf8_lossy(name));
+            Ok(0)
+        }
+        171 => Ok(0), // setdomainname
+        137 | 138 => {
+            if f.rax == 137 {
+                at_path(AT_FDCWD, &user_str(a0)?, true)?;
+            } else {
+                fd_file(a0)?;
+            }
+            // SAFETY: counters read on one CPU.
+            let (total, used) = unsafe { (crate::mem::TOTAL_PAGES, crate::mem::USED_PAGES) };
+            let s = user_slice(a1, 120)?;
+            s.fill(0);
+            let put = |s: &mut [u8], off: usize, v: u64| s[off..off + 8].copy_from_slice(&v.to_le_bytes());
+            put(s, 0, 0x0102_1994); // like tmpfs
+            put(s, 8, 4096);
+            put(s, 16, total);
+            put(s, 24, total.saturating_sub(used));
+            put(s, 32, total.saturating_sub(used));
+            put(s, 40, 1 << 20);
+            put(s, 48, 1 << 20);
+            put(s, 64, 255);
+            put(s, 72, 4096);
+            Ok(0)
+        }
         115 => Ok(0),                    // getgroups: none
         118 | 120 => {
-            for p in [a0, a1, a2] {
+            // getresuid, getresgid (the saved ID is the effective one)
+            let c = current();
+            let v = if f.rax == 118 { [c.uid, c.euid, c.euid] } else { [c.gid, c.egid, c.egid] };
+            for (p, id) in [a0, a1, a2].into_iter().zip(v) {
                 if p != 0 {
-                    user_slice(p, 4)?.fill(0);
+                    user_slice(p, 4)?.copy_from_slice(&id.to_le_bytes());
                 }
             }
             Ok(0)
-        } // getresuid, getresgid
+        }
         109 => {
             // setpgid
             let target = if a0 == 0 { proc::pid() } else { a0 as i32 };
@@ -1535,6 +1612,31 @@ fn handle(f: &mut SyscallFrame) -> Result<i64, i64> {
         124 => {
             let target = if a0 == 0 { proc::pid() } else { a0 as i32 };
             Ok(proc::get(target).ok_or(ESRCH)?.sid as i64)
+        }
+        128 => {
+            // rt_sigtimedwait(set, info, timeout, size): take one of the waited-for signals
+            let set = user_u64(a0)?;
+            let deadline = if a2 != 0 { now_ns().saturating_add(read_timespec(a2)?) } else { u64::MAX };
+            loop {
+                let p = current();
+                let hit = p.pending & set;
+                if hit != 0 {
+                    let n = hit.trailing_zeros() as u64 + 1;
+                    p.pending &= !(1u64 << (n - 1));
+                    if a1 != 0 {
+                        let si = user_slice(a1, 128)?;
+                        si.fill(0);
+                        si[0..4].copy_from_slice(&(n as i32).to_le_bytes());
+                    }
+                    return Ok(n as i64);
+                }
+                if now_ns() >= deadline {
+                    return Err(EAGAIN);
+                }
+                if proc::block() {
+                    return Err(proc::EINTR);
+                }
+            }
         }
         127 => {
             let p = current();

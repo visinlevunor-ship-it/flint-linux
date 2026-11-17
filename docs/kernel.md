@@ -5,12 +5,24 @@ Rust, started by flint-boot like Linux, and running ordinary Linux x86-64 progra
 Linux's system calls, so Flint's userland (and other Linux programs, static or built for glibc)
 run on it unchanged.
 
-**Version 0.3 runs Flint's shell and programs with disks, USB keyboards and wired
-networking**, keeps your files across restarts, and runs threaded and dynamically linked
-programs. It is still experimental: no Wi-Fi, no GPU acceleration, no /proc yet. Linux stays
+**Version 0.4 boots Flint like Linux does (init, login, your shell) with disks, USB
+keyboards and wired networking**, keeps your files across restarts, and runs threaded and dynamically linked
+programs. It is still experimental: no Wi-Fi, no GPU acceleration, no desktop yet. Linux stays
 the kernel Flint boots by default.
 
-## What 0.3 does
+## What 0.4 does
+
+- **Boots into Flint's init**: init starts netd and the login on the screen; log in, `su`
+  (with the password: real and effective user IDs are kept apart, set-user-ID programs work),
+  `reboot` and `poweroff` go through init. init leaves out what only Linux needs (modules,
+  devd, the other consoles).
+- **/proc** (processes, meminfo, cpuinfo, stat, uptime, loadavg, mounts, self, fd, ...) and a
+  little of /sys, so `ps`, `free`, `df`, `top` and fastfetch-style tools work.
+- **A fast screen**: the console keeps a grid of characters and redraws only changed rows, at
+  most every 20 ms, to a write-combining framebuffer (no more watching it draw). Colors (16,
+  256 and true color), bold, reverse, scrolling regions, insert/delete, the alternate screen,
+  a block cursor, UTF-8 with box-drawing and block characters; twice-size text on screens 2400
+  pixels wide or more.
 
 - **Boot**: a UEFI program. flint-boot loads it like Linux's kernel and hands it the command
   line and the base image (LoadFile2 on Linux's initrd media path). It takes the framebuffer
@@ -78,6 +90,5 @@ program (`exit`) saves your files and stops the machine.
   adapter, or USB tethering, and the plain framebuffer.
 - **A desktop and Firefox.** They also need /dev/dri (or /dev/fb0), input devices and shared
   memory for the X server; the sockets X clients use are there.
-- **/proc and /sys**, so `ps`, `free` and Flint's init and devd work as on Linux.
 - **More**: USB hubs and storage, writing to the data partition, other network cards (Realtek
   r8169), IPv6, more than one processor.

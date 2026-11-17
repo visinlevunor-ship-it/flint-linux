@@ -116,6 +116,48 @@ pub fn load_tasks(dir: &Path) -> Result<Option<Vec<Vec<String>>>, String> {
         .transpose()
 }
 
+/// Is this the Flint kernel (uname's system name "Flint") rather than Linux?
+pub fn on_flint_kernel() -> bool {
+    // SAFETY: uname fills the zeroed struct.
+    unsafe {
+        let mut u: libc::utsname = std::mem::zeroed();
+        libc::uname(&mut u) == 0 && std::ffi::CStr::from_ptr(u.sysname.as_ptr()).to_bytes() == b"Flint"
+    }
+}
+
+/// Boot tasks for the Flint kernel: it has no loadable modules and finds the boot and data
+/// partitions and keeps changes itself, so the tasks for those are dropped.
+pub fn tasks_for_flint_kernel(tasks: Vec<Vec<String>>) -> Vec<Vec<String>> {
+    tasks
+        .into_iter()
+        .filter(|t| {
+            let prog = t.first().map(String::as_str).unwrap_or("");
+            !(prog == "@persist" || prog.ends_with("/modload") || prog.ends_with("/mountboot"))
+        })
+        .collect()
+}
+
+/// Services for the Flint kernel: no devd (it has no device events to watch), and one login
+/// (the screen is a single console).
+pub fn services_for_flint_kernel(services: Vec<Service>) -> Vec<Service> {
+    let mut seen_tty = false;
+    services
+        .into_iter()
+        .filter(|s| {
+            if s.argv.first().is_some_and(|p| p.ends_with("/devd")) {
+                return false;
+            }
+            if s.tty.is_some() {
+                if seen_tty {
+                    return false;
+                }
+                seen_tty = true;
+            }
+            true
+        })
+        .collect()
+}
+
 /// Used when /etc/flint/services is missing or broken, so the system stays usable.
 pub fn default_services() -> Vec<Service> {
     let program = ["/sbin/login", "/bin/sh"]
@@ -133,6 +175,15 @@ pub fn default_services() -> Vec<Service> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flint_kernel_filters() {
+        let s = parse_services("devd respawn - /sbin/devd\nnetd respawn - /sbin/netd\ntty1 respawn /dev/tty1 /sbin/login\ntty2 respawn /dev/tty2 /sbin/login\n").unwrap();
+        let names: Vec<String> = services_for_flint_kernel(s).into_iter().map(|s| s.name).collect();
+        assert_eq!(names, vec!["netd", "tty1"]);
+        let t = parse_tasks("/sbin/modload --coldplug\n/sbin/mountboot --wait 15\n@persist\n/bin/mkdir -p /home/flint\n").unwrap();
+        assert_eq!(tasks_for_flint_kernel(t), vec![vec!["/bin/mkdir".to_string(), "-p".into(), "/home/flint".into()]]);
+    }
 
     #[test]
     fn parses_services_with_comments_and_blanks() {

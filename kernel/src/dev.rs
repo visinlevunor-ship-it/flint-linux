@@ -107,6 +107,9 @@ pub fn irq(line: u8, frame: Option<&mut crate::arch::IntFrame>) {
         0 => {
             // SAFETY: only this interrupt writes TICKS.
             unsafe { TICKS += 1 };
+            if ticks() % 2 == 0 {
+                crate::console::flush();
+            }
             poll_serial();
             poll_devices();
             eoi(0);

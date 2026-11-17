@@ -240,6 +240,40 @@ pub fn free_lower_half(pml4: u64) {
     }
 }
 
+/// How many program pages an address space has (its resident set: everything is in RAM).
+pub fn user_pages(pml4: u64) -> u64 {
+    let mut n = 0;
+    // SAFETY: reading page tables of a live address space on one CPU.
+    unsafe {
+        for i in 0..256 {
+            let e4 = *table(pml4).add(i);
+            if e4 & P_PRESENT == 0 {
+                continue;
+            }
+            for j in 0..512 {
+                let e3 = *table(e4 & ADDR_MASK).add(j);
+                if e3 & P_PRESENT == 0 {
+                    continue;
+                }
+                for k in 0..512 {
+                    let e2 = *table(e3 & ADDR_MASK).add(k);
+                    if e2 & P_PRESENT == 0 {
+                        continue;
+                    }
+                    let pt = table(e2 & ADDR_MASK);
+                    for l in 0..512 {
+                        let e1 = *pt.add(l);
+                        if e1 & P_PRESENT != 0 && e1 & P_USER != 0 {
+                            n += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    n
+}
+
 /// fork: a new address space with a copy of every program page of `parent`.
 pub fn clone_user(parent: u64) -> u64 {
     let child = new_address_space();
@@ -334,6 +368,33 @@ pub fn map_mmio(phys: u64, size: u64) -> *mut u8 {
         }
     }
     phys_to_virt(phys)
+}
+
+/// Make the physical range (the framebuffer) write-combining in the physical mapping: PAT
+/// entry 1 becomes WC and the range's 2 MiB pages select it with PWT. Writes then go out in
+/// bursts instead of one uncached store at a time.
+pub fn write_combining(phys: u64, size: u64) {
+    const P_PWT: u64 = 1 << 3;
+    // SAFETY: the PAT MSR (entry 1, used by nothing else: map_mmio uses PCD|PWT = entry 3) and
+    // the kernel's own tables.
+    unsafe {
+        let pat = crate::arch::rdmsr(0x277);
+        crate::arch::wrmsr(0x277, (pat & !(0xFF << 8)) | (0x01 << 8));
+        let mut p = phys & !((2 << 20) - 1);
+        while p < phys + size {
+            let v = PHYS_OFF + p;
+            let e4 = table(KERNEL_PML4).add(((v >> 39) & 511) as usize);
+            let pdpt = next_level(e4, false);
+            let e3 = table(pdpt).add(((v >> 30) & 511) as usize);
+            let pd = next_level(e3, false);
+            let e2 = table(pd).add(((v >> 21) & 511) as usize);
+            if *e2 & P_PRESENT != 0 {
+                *e2 |= P_PWT;
+            }
+            p += 2 << 20;
+        }
+        core::arch::asm!("wbinvd", "mov {t}, cr3", "mov cr3, {t}", t = out(reg) _, options(nostack));
+    }
 }
 
 /// The kernel image's range: programs must not be loaded over it.

@@ -93,7 +93,12 @@ fn run() -> ! {
     boot::early();
 
     let dir = Path::new(CONFIG_DIR);
+    let flint_kernel = config::on_flint_kernel();
+    if flint_kernel {
+        flint_info!("running on the Flint kernel: no modules, devd or extra consoles");
+    }
     match config::load_tasks(dir) {
+        Ok(Some(tasks)) if flint_kernel => boot::run_tasks(&config::tasks_for_flint_kernel(tasks)),
         Ok(Some(tasks)) => boot::run_tasks(&tasks),
         Ok(None) => {}
         Err(e) => flint_err!("{e}; skipping boot tasks"),
@@ -110,6 +115,7 @@ fn run() -> ! {
         }
     };
 
+    let services = if flint_kernel { config::services_for_flint_kernel(services) } else { services };
     let mut sup = Supervisor::new(services);
     loop {
         // PID 1 must survive its own bugs: a panic in one iteration is logged, not fatal.
