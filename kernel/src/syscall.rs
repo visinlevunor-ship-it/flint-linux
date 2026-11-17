@@ -1682,13 +1682,6 @@ fn handle(f: &mut SyscallFrame) -> Result<i64, i64> {
             vfs::mknod_fifo(&canon, mode as u32)?;
             Ok(0)
         }
-        137 | 138 => {
-            let s = user_slice(a1, 120)?;
-            s.fill(0);
-            s[0..8].copy_from_slice(&0x0102_1994u64.to_le_bytes()); // tmpfs
-            s[8..16].copy_from_slice(&4096u64.to_le_bytes());
-            Ok(0)
-        } // statfs, fstatfs
         157 => Ok(0), // prctl
         158 => {
             // arch_prctl

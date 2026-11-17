@@ -233,7 +233,6 @@ fn glyph_bits(cp: u32) -> [u8; 16] {
         0x119 => ascii(b'e'),
         0x143 => ascii(b'N'),
         0x144 => ascii(b'n'),
-        0xD3 => ascii(b'O'),
         0xDF => ascii(b's'),
         _ => ascii(b'?'),
     }
