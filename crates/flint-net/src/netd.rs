@@ -303,6 +303,15 @@ pub fn netd(_args: Vec<String>) -> i32 {
     }
     let (mut rt, events) = match (Rtnl::open(), Rtnl::events()) {
         (Ok(a), Ok(b)) => (a, b),
+        (Err(e), _) | (_, Err(e)) if e.raw_os_error() == Some(libc::EAFNOSUPPORT) => {
+            // The Flint kernel has no netlink: it brings the wired card up and runs DHCP
+            // itself, and writes the status and /run/resolv.conf. Stay around quietly so the
+            // service is not restarted over and over.
+            log("the kernel configures the network itself (no netlink); nothing to do");
+            loop {
+                std::thread::sleep(Duration::from_secs(3600));
+            }
+        }
         (Err(e), _) | (_, Err(e)) => {
             log(&format!("cannot open a netlink socket: {e}"));
             return 1;

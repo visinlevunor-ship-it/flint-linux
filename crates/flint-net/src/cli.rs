@@ -44,8 +44,45 @@ pub fn net(args: Vec<String>) -> i32 {
     }
 }
 
+/// No netlink: the Flint kernel, which keeps its card's state in the status directory.
+fn kernel_status() -> io::Result<()> {
+    let mut names: Vec<String> = fs::read_dir(crate::netd::STATUS_DIR)
+        .map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| !n.starts_with('.')).collect())
+        .unwrap_or_default();
+    names.sort();
+    if names.is_empty() {
+        println!("No network card found. (The Flint kernel drives Intel e1000/e1000e, virtio-net and USB");
+        println!("network adapters and phones (CDC ECM, NCM, RNDIS); Wi-Fi is not supported yet.)");
+        return Ok(());
+    }
+    for name in names {
+        let st = read_status(&name);
+        let shown = match st.get("state").map(String::as_str).unwrap_or("down") {
+            "no-carrier" => "no cable".to_string(),
+            "configuring" => "getting an address (DHCP)".into(),
+            "no-dhcp" => "no DHCP server answered".into(),
+            s => s.to_string(),
+        };
+        println!("{:<10} {:<6} {}", name, "wired", shown);
+        for (key, label) in [("driver", "card"), ("address", "address"), ("gateway", "gateway"), ("dns", "dns"), ("mac", "mac")] {
+            if let Some(v) = st.get(key).filter(|v| !v.is_empty()) {
+                println!("           {label:<8} {v}");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn no_netlink(e: &io::Error) -> bool {
+    e.raw_os_error() == Some(libc::EAFNOSUPPORT)
+}
+
 fn status() -> io::Result<()> {
-    let mut rt = Rtnl::open()?;
+    let mut rt = match Rtnl::open() {
+        Ok(rt) => rt,
+        Err(e) if no_netlink(&e) => return kernel_status(),
+        Err(e) => return Err(e),
+    };
     let links = rt.links()?;
     let addrs = rt.addresses()?;
     let routes = rt.default_routes().unwrap_or_default();
@@ -93,7 +130,11 @@ fn status() -> io::Result<()> {
 }
 
 fn wireless_link() -> io::Result<rtnl::Link> {
-    let mut rt = Rtnl::open()?;
+    let mut rt = match Rtnl::open() {
+        Ok(rt) => rt,
+        Err(e) if no_netlink(&e) => return Err(io::Error::new(io::ErrorKind::Unsupported, "Wi-Fi is not supported by the Flint kernel yet (use a cable, a USB network adapter, or USB tethering from a phone)")),
+        Err(e) => return Err(e),
+    };
     let links = rt.links()?;
     links.into_iter().find(|l| l.is_wireless()).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no Wi-Fi interface (no Wi-Fi card, or its driver or firmware is missing: see dmesg)"))
 }

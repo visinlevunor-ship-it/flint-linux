@@ -7,9 +7,10 @@
 //! system call entry. Programs are ordinary static Linux x86-64 executables; they talk to the
 //! kernel through Linux's system calls.
 //!
-//! Version 0.2 runs processes (fork, exec, wait, pipes, a scheduler with a timer), reads the
-//! keyboard (i8042) and the serial port, and gives programs the base image with a writable
-//! layer in RAM as their root filesystem. The first program is Flint's shell.
+//! Version 0.3 runs processes and threads with signal handlers, reads disks (NVMe, SATA,
+//! virtio; the boot and data partitions) and keeps changes across restarts, drives PS/2 and
+//! USB keyboards, and has wired networking (e1000, virtio-net, USB network adapters and
+//! phones) with TCP/IP, DHCP and sockets. The first program is Flint's shell.
 
 #![no_std]
 #![no_main]
@@ -32,6 +33,9 @@ mod xhci;
 mod efi;
 mod font;
 mod mem;
+mod net;
+mod nic;
+mod sock;
 mod proc;
 mod syscall;
 mod tty;
@@ -247,7 +251,11 @@ extern "C" fn kmain() -> ! {
     // disks: NVMe, SATA (AHCI), virtio
     let devs = pci::scan();
     kprintln!("[kernel] PCI: {} devices", devs.len());
+    let mut card = None;
     for d in &devs {
+        if card.is_none() {
+            card = nic::probe_e1000(d).or_else(|| nic::probe_virtio(d));
+        }
         if let Some(disk) = nvme::probe(d, nvme_count(&devs, d)) {
             block::register(disk);
         }
@@ -263,6 +271,8 @@ extern "C" fn kmain() -> ! {
     persist::init(cmdline);
     vfs::init();
     dev::init();
+    let card = card.or_else(xhci::network_card);
+    net::init(card, cmdline);
 
     let env: Vec<String> = ["PATH=/bin:/sbin:/usr/bin:/usr/sbin", "HOME=/root", "TERM=linux", "USER=root", "LOGNAME=root", "SHELL=/bin/sh", "LANG=C.UTF-8"]
         .iter()

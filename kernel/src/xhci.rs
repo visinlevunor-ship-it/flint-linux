@@ -77,7 +77,32 @@ pub struct Xhci {
     ev_cycle: bool,
     dcbaa: u64,
     kbds: Vec<Keyboard>,
+    nets: Vec<UsbNet>,
 }
+
+/// A USB network adapter or phone (CDC ECM or NCM): bulk endpoints for the frames.
+struct UsbNet {
+    slot: u8,
+    kind: u8, // 1 ECM, 2 NCM, 3 RNDIS
+    mac: [u8; 6],
+    out_dci: u8,
+    in_dci: u8,
+    out_ring: Ring,
+    in_ring: Ring,
+    out_mps: u32,
+    rx_bufs: u64,
+    rx_next: usize,
+    tx_bufs: u64,
+    tx_next: usize,
+    tx_busy: usize,
+    rxq: alloc::collections::VecDeque<Vec<u8>>,
+    seq: u16,
+}
+
+const NET_RX: usize = 16; // receive transfers kept queued, 16 KiB each
+const NET_RX_SIZE: usize = 16384;
+const NET_TX: usize = 32; // send buffers, 2 KiB each
+
 
 static mut HCS: Vec<Xhci> = Vec::new();
 
@@ -176,13 +201,16 @@ pub fn probe(d: &Dev) {
         w64(ir, 0x10, erst); // ERSTBA
         w32(op, 0, 1); // run
         wait(|| r32(op, 4) & 1 == 0, 100);
-        let mut hc = Xhci { op, db, rt, ctx64: hcc1 & 4 != 0, cmd, ev_base: ev, ev_idx: 0, ev_cycle: true, dcbaa, kbds: Vec::new() };
+        let mut hc = Xhci { op, db, rt, ctx64: hcc1 & 4 != 0, cmd, ev_base: ev, ev_idx: 0, ev_cycle: true, dcbaa, kbds: Vec::new(), nets: Vec::new() };
         sleep_ms(50);
         for port in 0..max_ports {
             hc.port(port);
         }
         if !hc.kbds.is_empty() {
             crate::kprintln!("[kernel] USB: {} keyboard(s)", hc.kbds.len());
+        }
+        for n in &hc.nets {
+            crate::kprintln!("[kernel] USB: network adapter ({})", kind_name(n.kind));
         }
         (*core::ptr::addr_of_mut!(HCS)).push(hc);
     }
@@ -225,7 +253,7 @@ impl Xhci {
                     return Some((e[2] >> 24, e[3] >> 24, e));
                 }
                 if ty == 32 {
-                    self.keyboard_event(&e);
+                    self.transfer_event(&e);
                 }
             }
             if crate::syscall::now_ns() - start > ms * 1_000_000 {
@@ -301,6 +329,9 @@ impl Xhci {
             if self.control(&mut dev, 0x80, 6, 0x0200, 0, buf, 255).is_none() {
                 return;
             }
+            if self.try_network(&mut dev, p, speed, buf, input) {
+                return;
+            }
             let cfg = core::slice::from_raw_parts(v(buf), 255).to_vec();
             let total = (u16::from_le_bytes([cfg[2], cfg[3]]) as usize).min(255);
             let config_value = cfg[5];
@@ -362,6 +393,281 @@ impl Xhci {
         }
     }
 
+    /// A CDC ECM or NCM network function in any of the device's configurations: set it up
+    /// and keep it. False when the device is something else.
+    fn try_network(&mut self, dev: &mut Dev0, p: usize, speed: u32, buf: u64, input: u64) -> bool {
+        // SAFETY: our descriptor buffer, contexts and rings.
+        unsafe {
+            if self.control(dev, 0x80, 6, 0x0100, 0, buf, 18).is_none() {
+                return false;
+            }
+            let configs = *v(buf).add(17);
+            // every configuration's network function: (kind, config descriptor, comm interface,
+            // data interface, alternate setting, IN, OUT, MAC string); ECM and NCM before RNDIS
+            let mut found: Vec<(u8, Vec<u8>, u8, u8, u8, (u8, u32), (u8, u32), u8)> = Vec::new();
+            for ci in 0..configs.min(4) {
+                if self.control(dev, 0x80, 6, 0x0200 | ci as u16, 0, buf, 9).is_none() {
+                    continue;
+                }
+                let total = (u16::from_le_bytes([*v(buf).add(2), *v(buf).add(3)]) as usize).min(4096);
+                if self.control(dev, 0x80, 6, 0x0200 | ci as u16, 0, buf, total as u16).is_none() {
+                    continue;
+                }
+                let cfg = core::slice::from_raw_parts(v(buf), total).to_vec();
+                let (mut kind, mut comm, mut mac_str, mut union) = (0u8, None, 0u8, None);
+                let mut cur: (u8, u8, u8, u8) = (0, 0, 0, 0); // number, alt, class, subclass
+                let mut eps: Vec<(u8, u8, u8, u8, u32)> = Vec::new(); // interface, alt, class, address, size
+                let mut off = 0;
+                while off + 2 <= total {
+                    let len = cfg[off] as usize;
+                    if len < 2 || off + len > total {
+                        break;
+                    }
+                    let d = &cfg[off..off + len];
+                    match d[1] {
+                        4 if len >= 9 => {
+                            cur = (d[2], d[3], d[5], d[6]);
+                            if comm.is_none() {
+                                let k = match (d[5], d[6], d[7]) {
+                                    (2, 6, _) => 1,
+                                    (2, 0x0D, _) => 2,
+                                    (0xE0, 1, 3) | (2, 2, 0xFF) | (0xEF, 4, 1) => 3,
+                                    _ => 0,
+                                };
+                                if k != 0 {
+                                    comm = Some(d[2]);
+                                    kind = k;
+                                }
+                            }
+                        }
+                        0x24 if comm == Some(cur.0) && len >= 4 => match d[2] {
+                            0x06 if len >= 5 => union = Some(d[4]),
+                            0x0F => mac_str = d[3],
+                            _ => {}
+                        },
+                        5 if len >= 7 && d[3] & 3 == 2 => eps.push((cur.0, cur.1, cur.2, d[2], u16::from_le_bytes([d[4], d[5]]) as u32 & 0x7FF)),
+                        _ => {}
+                    }
+                    off += len;
+                }
+                let Some(comm) = comm else { continue };
+                let data_if = union.unwrap_or(comm + 1);
+                let want_alt = |alt: u8| if kind == 3 { alt == 0 } else { alt != 0 };
+                let ep_in = eps.iter().find(|e| e.0 == data_if && e.2 == 0x0A && want_alt(e.1) && e.3 & 0x80 != 0);
+                let ep_out = eps.iter().find(|e| e.0 == data_if && e.2 == 0x0A && want_alt(e.1) && e.3 & 0x80 == 0);
+                if let (Some(i), Some(o)) = (ep_in, ep_out) {
+                    found.push((kind, cfg.clone(), comm, data_if, i.1, (i.3 & 0xF, i.4), (o.3 & 0xF, o.4), mac_str));
+                }
+            }
+            found.sort_by_key(|f| f.0 == 3);
+            for (kind, cfg, comm, data_if, data_alt, (in_ep, in_mps), (out_ep, out_mps), mac_str) in found {
+                let mut mac = [0x02, 0, 0, 0, 0, 1];
+                if mac_str != 0 && self.control(dev, 0x80, 6, 0x0300 | mac_str as u16, 0x0409, buf, 255).is_some() {
+                    let sd = core::slice::from_raw_parts(v(buf), 255);
+                    let digits: Vec<u8> = sd[2..(sd[0] as usize).min(255)].chunks(2).map(|c| c[0]).collect();
+                    if digits.len() >= 12 {
+                        for (i, m) in mac.iter_mut().enumerate() {
+                            let h = core::str::from_utf8(&digits[i * 2..i * 2 + 2]).ok().and_then(|t| u8::from_str_radix(t, 16).ok());
+                            *m = h.unwrap_or(0);
+                        }
+                    }
+                }
+                let config_value = cfg[5];
+                if self.control(dev, 0x00, 9, config_value as u16, 0, 0, 0).is_none() {
+                    continue;
+                }
+                // Configure Endpoint: bulk OUT and IN
+                let out_dci = out_ep * 2;
+                let in_dci = in_ep * 2 + 1;
+                core::ptr::write_bytes(v(input), 0, 4096);
+                let icc = self.ctx(input, 0);
+                write_volatile(icc.add(1), 1 | (1 << out_dci) | (1 << in_dci));
+                let slotc = self.ctx(input, 1);
+                write_volatile(slotc, (speed << 20) | ((out_dci.max(in_dci) as u32) << 27));
+                write_volatile(slotc.add(1), ((p + 1) as u32) << 16);
+                let out_ring = Ring::new();
+                let in_ring = Ring::new();
+                for (dci, ring, ty, mps) in [(out_dci, &out_ring, 2u32, out_mps), (in_dci, &in_ring, 6u32, in_mps)] {
+                    let epc = self.ctx(input, 1 + dci as usize);
+                    write_volatile(epc.add(1), (3 << 1) | (ty << 3) | (mps << 16));
+                    write_volatile(epc.add(2), ring.base as u32 | 1);
+                    write_volatile(epc.add(3), (ring.base >> 32) as u32);
+                    write_volatile(epc.add(4), 1500);
+                }
+                let slot = dev.slot as u32;
+                let Some((cc, _)) = self.command([input as u32, (input >> 32) as u32, 0, (12 << 10) | (slot << 24)]) else { return true };
+                if cc != 1 {
+                    crate::kprintln!("[kernel] USB: network adapter not configured (code {})", cc);
+                    return true;
+                }
+                if kind == 3 {
+                    // RNDIS: initialise, ask for the address, then switch the packet filter on
+                    match self.rndis_setup(dev, comm, buf) {
+                        Some(m) => mac = m,
+                        None => {
+                            crate::kprintln!("[kernel] USB: RNDIS device did not answer");
+                            return true;
+                        }
+                    }
+                } else {
+                    // the data interface's working alternate setting; frames to us and broadcasts
+                    let _ = self.control(dev, 0x01, 0x0B, data_alt as u16, data_if as u16, 0, 0);
+                    let _ = self.control(dev, 0x21, 0x43, 0x0E, comm as u16, 0, 0);
+                }
+                let rx_bufs = mem::alloc_contiguous((NET_RX * NET_RX_SIZE / 4096) as u64);
+                let tx_bufs = mem::alloc_contiguous((NET_TX * 2048 / 4096) as u64);
+                let mut n = UsbNet {
+                    slot: dev.slot,
+                    kind,
+                    mac,
+                    out_dci,
+                    in_dci,
+                    out_ring,
+                    in_ring,
+                    out_mps,
+                    rx_bufs,
+                    rx_next: 0,
+                    tx_bufs,
+                    tx_next: 0,
+                    tx_busy: 0,
+                    rxq: alloc::collections::VecDeque::new(),
+                    seq: 0,
+                };
+                for _ in 0..NET_RX {
+                    self.queue_rx(&mut n);
+                }
+                self.nets.push(n);
+                return true;
+            }
+            false
+        }
+    }
+
+    /// An RNDIS control message and its reply (in `buf`).
+    fn rndis_msg(&mut self, dev: &mut Dev0, comm: u8, buf: u64, msg: &[u32]) -> Option<Vec<u8>> {
+        // SAFETY: our buffer page.
+        unsafe { core::ptr::copy_nonoverlapping(msg.as_ptr() as *const u8, v(buf), msg.len() * 4) };
+        self.control(dev, 0x21, 0x00, 0, comm as u16, buf, (msg.len() * 4) as u16)?;
+        for _ in 0..50 {
+            // SAFETY: as above.
+            unsafe { core::ptr::write_bytes(v(buf), 0, 1024) };
+            if self.control(dev, 0xA1, 0x01, 0, comm as u16, buf, 1024).is_some() {
+                // SAFETY: as above.
+                let r = unsafe { core::slice::from_raw_parts(v(buf), 1024) }.to_vec();
+                let ty = u32::from_le_bytes([r[0], r[1], r[2], r[3]]);
+                if ty == msg[0] | 0x8000_0000 {
+                    return Some(r);
+                }
+            }
+            sleep_ms(10);
+        }
+        None
+    }
+
+    fn rndis_setup(&mut self, dev: &mut Dev0, comm: u8, buf: u64) -> Option<[u8; 6]> {
+        let le = |r: &[u8], at: usize| u32::from_le_bytes([r[at], r[at + 1], r[at + 2], r[at + 3]]);
+        let r = self.rndis_msg(dev, comm, buf, &[2, 24, 1, 1, 0, 0x4000])?;
+        if le(&r, 12) != 0 {
+            return None;
+        }
+        // OID_802_3_PERMANENT_ADDRESS
+        let r = self.rndis_msg(dev, comm, buf, &[4, 28, 2, 0x0101_0101, 0, 0, 0])?;
+        let (blen, boff) = (le(&r, 16) as usize, le(&r, 20) as usize);
+        let mut mac = [0u8; 6];
+        if blen >= 6 && 8 + boff + 6 <= r.len() {
+            mac.copy_from_slice(&r[8 + boff..8 + boff + 6]);
+        }
+        // OID_GEN_CURRENT_PACKET_FILTER: directed, multicast, broadcast
+        self.rndis_msg(dev, comm, buf, &[5, 32, 3, 0x0001_010E, 4, 20, 0, 0x0B])?;
+        Some(mac)
+    }
+
+    fn queue_rx(&self, n: &mut UsbNet) {
+        let b = n.rx_bufs + (n.rx_next * NET_RX_SIZE) as u64;
+        n.rx_next = (n.rx_next + 1) % NET_RX;
+        n.in_ring.push([b as u32, (b >> 32) as u32, NET_RX_SIZE as u32, (1 << 10) | (1 << 5) | (1 << 2)]); // Normal, IOC, ISP
+        // SAFETY: the device's doorbell.
+        unsafe { write_volatile(self.db.add(n.slot as usize), n.in_dci as u32) };
+    }
+
+    /// A transfer finished: a keyboard report, a received frame, or a sent one.
+    fn transfer_event(&mut self, e: &[u32; 4]) {
+        let slot = (e[3] >> 24) as u8;
+        let ep = ((e[3] >> 16) & 0x1F) as u8;
+        if self.kbds.iter().any(|k| k.slot == slot && k.dci == ep) {
+            self.keyboard_event(e);
+            return;
+        }
+        let Some(i) = self.nets.iter().position(|n| n.slot == slot && (n.in_dci == ep || n.out_dci == ep)) else { return };
+        let mut n = core::mem::replace(&mut self.nets[i], UsbNet::empty());
+        if ep == n.out_dci {
+            n.tx_busy = n.tx_busy.saturating_sub(1);
+        } else {
+            let cc = e[2] >> 24;
+            let ptr = e[0] as u64 | (e[1] as u64) << 32;
+            // the event points at the TRB; find which buffer it carried
+            // SAFETY: a TRB of our own ring.
+            let buf = unsafe { read_volatile(v(ptr) as *const u64) };
+            let len = NET_RX_SIZE - (e[2] & 0xFF_FFFF) as usize;
+            if (cc == 1 || cc == 13) && buf >= n.rx_bufs && buf < n.rx_bufs + (NET_RX * NET_RX_SIZE) as u64 && len > 0 {
+                // SAFETY: the buffer the controller just filled.
+                let data = unsafe { core::slice::from_raw_parts(v(buf), len.min(NET_RX_SIZE)) };
+                if n.kind == 2 {
+                    ncm_unpack(data, &mut n.rxq);
+                } else if n.kind == 3 {
+                    rndis_unpack(data, &mut n.rxq);
+                } else if n.rxq.len() < 256 {
+                    n.rxq.push_back(data.to_vec());
+                }
+            }
+            // put the same buffer back in the queue
+            n.in_ring.push([buf as u32, (buf >> 32) as u32, NET_RX_SIZE as u32, (1 << 10) | (1 << 5) | (1 << 2)]);
+            // SAFETY: the device's doorbell.
+            unsafe { write_volatile(self.db.add(n.slot as usize), n.in_dci as u32) };
+        }
+        self.nets[i] = n;
+    }
+
+    fn net_send(&mut self, i: usize, frame: &[u8]) {
+        let n = &mut self.nets[i];
+        if n.tx_busy >= NET_TX - 1 {
+            return; // the adapter is behind: drop, TCP will send again
+        }
+        let b = n.tx_bufs + (n.tx_next * 2048) as u64;
+        n.tx_next = (n.tx_next + 1) % NET_TX;
+        let len = if n.kind == 2 {
+            n.seq = n.seq.wrapping_add(1);
+            ncm_pack(frame, n.seq, v(b))
+        } else if n.kind == 3 {
+            let l = frame.len().min(2048 - 44);
+            let mut h = [0u32; 11];
+            h[0] = 1;
+            h[1] = (44 + l) as u32;
+            h[2] = 36;
+            h[3] = l as u32;
+            // SAFETY: our send buffer.
+            unsafe {
+                core::ptr::copy_nonoverlapping(h.as_ptr() as *const u8, v(b), 44);
+                core::ptr::copy_nonoverlapping(frame.as_ptr(), v(b).add(44), l);
+            }
+            44 + l
+        } else {
+            let l = frame.len().min(2048);
+            // SAFETY: our send buffer.
+            unsafe { core::ptr::copy_nonoverlapping(frame.as_ptr(), v(b), l) };
+            l
+        };
+        n.tx_busy += 1;
+        let zlp = len % n.out_mps as usize == 0;
+        n.out_ring.push([b as u32, (b >> 32) as u32, len as u32, (1 << 10) | if zlp { 0 } else { 1 << 5 }]);
+        if zlp {
+            // a transfer that fills whole packets ends with an empty one
+            n.out_ring.push([0, 0, 0, (1 << 10) | (1 << 5)]);
+        }
+        // SAFETY: the device's doorbell.
+        unsafe { write_volatile(self.db.add(n.slot as usize), n.out_dci as u32) };
+    }
+
     fn queue_report(&self, kb: &mut Keyboard) {
         kb.ring.push([kb.buf as u32, (kb.buf >> 32) as u32, 8, (1 << 10) | (1 << 5) | (1 << 2)]); // Normal, IOC, ISP
         // SAFETY: the device's doorbell.
@@ -404,6 +710,105 @@ impl Xhci {
     }
 }
 
+impl UsbNet {
+    fn empty() -> UsbNet {
+        UsbNet {
+            slot: 0,
+            kind: 0,
+            mac: [0; 6],
+            out_dci: 0,
+            in_dci: 0,
+            out_ring: Ring { base: 0, idx: 0, cycle: true },
+            in_ring: Ring { base: 0, idx: 0, cycle: true },
+            out_mps: 512,
+            rx_bufs: 0,
+            rx_next: 0,
+            tx_bufs: 0,
+            tx_next: 0,
+            tx_busy: 0,
+            rxq: alloc::collections::VecDeque::new(),
+            seq: 0,
+        }
+    }
+}
+
+fn kind_name(k: u8) -> &'static str {
+    match k {
+        2 => "CDC NCM",
+        3 => "RNDIS",
+        _ => "CDC ECM",
+    }
+}
+
+/// The Ethernet frames in an RNDIS transfer (one or more data messages).
+fn rndis_unpack(d: &[u8], q: &mut alloc::collections::VecDeque<Vec<u8>>) {
+    let le = |at: usize| -> usize { d.get(at..at + 4).map(|x| u32::from_le_bytes([x[0], x[1], x[2], x[3]]) as usize).unwrap_or(0) };
+    let mut at = 0;
+    while at + 44 <= d.len() {
+        let (ty, len, off, dlen) = (le(at), le(at + 4), le(at + 8), le(at + 12));
+        if ty != 1 || len < 44 {
+            return;
+        }
+        let start = at + 8 + off;
+        if start + dlen <= d.len() && q.len() < 256 {
+            q.push_back(d[start..start + dlen].to_vec());
+        }
+        at += len;
+    }
+}
+
+/// One Ethernet frame in an NCM transfer block (16-bit format): NTH16, the frame, NDP16.
+fn ncm_pack(frame: &[u8], seq: u16, out: *mut u8) -> usize {
+    let flen = frame.len().min(1514);
+    let data_at = 12usize;
+    let ndp_at = (data_at + flen + 3) & !3;
+    let total = ndp_at + 16;
+    let mut b = [0u8; 2048];
+    b[0..4].copy_from_slice(b"NCMH");
+    b[4..6].copy_from_slice(&12u16.to_le_bytes());
+    b[6..8].copy_from_slice(&seq.to_le_bytes());
+    b[8..10].copy_from_slice(&(total as u16).to_le_bytes());
+    b[10..12].copy_from_slice(&(ndp_at as u16).to_le_bytes());
+    b[data_at..data_at + flen].copy_from_slice(&frame[..flen]);
+    let n = &mut b[ndp_at..ndp_at + 16];
+    n[0..4].copy_from_slice(b"NCM0");
+    n[4..6].copy_from_slice(&16u16.to_le_bytes());
+    n[8..10].copy_from_slice(&(data_at as u16).to_le_bytes());
+    n[10..12].copy_from_slice(&(flen as u16).to_le_bytes());
+    // SAFETY: our 2 KiB send buffer.
+    unsafe { core::ptr::copy_nonoverlapping(b.as_ptr(), out, total) };
+    total
+}
+
+/// The frames in a received NCM transfer block.
+fn ncm_unpack(d: &[u8], q: &mut alloc::collections::VecDeque<Vec<u8>>) {
+    let le = |at: usize| -> usize { d.get(at..at + 2).map(|x| u16::from_le_bytes([x[0], x[1]]) as usize).unwrap_or(0) };
+    if d.len() < 12 || &d[0..4] != b"NCMH" {
+        return;
+    }
+    let mut ndp = le(10);
+    let mut guard = 0;
+    while ndp != 0 && ndp + 8 <= d.len() && guard < 16 {
+        guard += 1;
+        if &d[ndp..ndp + 3] != b"NCM" {
+            return;
+        }
+        let len = le(ndp + 4);
+        let mut e = ndp + 8;
+        while e + 4 <= (ndp + len).min(d.len()) {
+            let (at, l) = (le(e), le(e + 2));
+            if at == 0 || l == 0 {
+                break;
+            }
+            if at + l <= d.len() && q.len() < 256 {
+                q.push_back(d[at..at + l].to_vec());
+            }
+            e += 4;
+        }
+        ndp = le(ndp + 6);
+    }
+}
+
 struct Dev0 {
     slot: u8,
     ring: Ring,
@@ -416,7 +821,7 @@ pub fn poll() {
     for hc in hcs.iter_mut() {
         while let Some(e) = hc.event() {
             if (e[3] >> 10) & 0x3F == 32 {
-                hc.keyboard_event(&e);
+                hc.transfer_event(&e);
             }
         }
     }
@@ -458,5 +863,66 @@ fn hid_key(m: u8, k: u8) {
         0x4E => send(b"\x1b[6~"),
         0x58 => send(b"\n"),
         _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------------------
+// The network adapters as network cards for the stack
+
+pub struct UsbNic {
+    hc: usize,
+    n: usize,
+    mac: [u8; 6],
+}
+
+fn hcs() -> &'static mut Vec<Xhci> {
+    // SAFETY: one CPU.
+    unsafe { &mut *core::ptr::addr_of_mut!(HCS) }
+}
+
+/// The first USB network adapter found, if any.
+pub fn network_card() -> Option<alloc::boxed::Box<dyn crate::nic::Nic>> {
+    for (h, hc) in hcs().iter().enumerate() {
+        if let Some(n) = hc.nets.first() {
+            // the address the device gives (iMACAddress) is the one this end uses, as on Linux
+            return Some(alloc::boxed::Box::new(UsbNic { hc: h, n: 0, mac: n.mac }));
+        }
+    }
+    None
+}
+
+impl crate::nic::Nic for UsbNic {
+    fn mac(&self) -> [u8; 6] {
+        self.mac
+    }
+    fn name(&self) -> &'static str {
+        match hcs()[self.hc].nets[self.n].kind {
+            2 => "USB network (CDC NCM)",
+            3 => "USB network (RNDIS)",
+            _ => "USB network (CDC ECM)",
+        }
+    }
+    fn link_up(&self) -> bool {
+        true
+    }
+    fn send(&mut self, frame: &[u8]) {
+        let hc = &mut hcs()[self.hc];
+        while let Some(e) = hc.event() {
+            if (e[3] >> 10) & 0x3F == 32 {
+                hc.transfer_event(&e);
+            }
+        }
+        hc.net_send(self.n, frame);
+    }
+    fn recv(&mut self) -> Option<Vec<u8>> {
+        let hc = &mut hcs()[self.hc];
+        if hc.nets[self.n].rxq.is_empty() {
+            while let Some(e) = hc.event() {
+                if (e[3] >> 10) & 0x3F == 32 {
+                    hc.transfer_event(&e);
+                }
+            }
+        }
+        hc.nets[self.n].rxq.pop_front()
     }
 }

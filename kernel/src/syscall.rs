@@ -13,37 +13,37 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-const ENOENT: i64 = 2;
-const ESRCH: i64 = 3;
-const EBADF: i64 = 9;
-const EAGAIN: i64 = 11;
-const ENOMEM: i64 = 12;
-const EACCES: i64 = 13;
-const EEXIST: i64 = 17;
-const ENOTDIR: i64 = 20;
-const EISDIR: i64 = 21;
-const EINVAL: i64 = 22;
-const EMFILE: i64 = 24;
-const ENOTTY: i64 = 25;
-const ENOSPC: i64 = 28;
-const ESPIPE: i64 = 29;
-const EPIPE: i64 = 32;
-const ERANGE: i64 = 34;
-const ENOSYS: i64 = 38;
-const EPERM: i64 = 1;
-const ENXIO: i64 = 6;
-const EAFNOSUPPORT: i64 = 97;
+pub(crate) const ENOENT: i64 = 2;
+pub(crate) const ESRCH: i64 = 3;
+pub(crate) const EBADF: i64 = 9;
+pub(crate) const EAGAIN: i64 = 11;
+pub(crate) const ENOMEM: i64 = 12;
+pub(crate) const EACCES: i64 = 13;
+pub(crate) const EEXIST: i64 = 17;
+pub(crate) const ENOTDIR: i64 = 20;
+pub(crate) const EISDIR: i64 = 21;
+pub(crate) const EINVAL: i64 = 22;
+pub(crate) const EMFILE: i64 = 24;
+pub(crate) const ENOTTY: i64 = 25;
+pub(crate) const ENOSPC: i64 = 28;
+pub(crate) const ESPIPE: i64 = 29;
+pub(crate) const EPIPE: i64 = 32;
+pub(crate) const ERANGE: i64 = 34;
+pub(crate) const ENOSYS: i64 = 38;
+pub(crate) const EPERM: i64 = 1;
+pub(crate) const ENXIO: i64 = 6;
+pub(crate) const EAFNOSUPPORT: i64 = 97;
 
-const AT_FDCWD: i64 = -100;
-const O_ACCMODE: u32 = 3;
-const O_CREAT: u32 = 0o100;
-const O_EXCL: u32 = 0o200;
-const O_TRUNC: u32 = 0o1000;
-const O_APPEND: u32 = 0o2000;
-const O_NONBLOCK: u32 = 0o4000;
-const O_DIRECTORY: u32 = 0o200000;
-const O_NOFOLLOW: u32 = 0o400000;
-const O_CLOEXEC: u32 = 0o2000000;
+pub(crate) const AT_FDCWD: i64 = -100;
+pub(crate) const O_ACCMODE: u32 = 3;
+pub(crate) const O_CREAT: u32 = 0o100;
+pub(crate) const O_EXCL: u32 = 0o200;
+pub(crate) const O_TRUNC: u32 = 0o1000;
+pub(crate) const O_APPEND: u32 = 0o2000;
+pub(crate) const O_NONBLOCK: u32 = 0o4000;
+pub(crate) const O_DIRECTORY: u32 = 0o200000;
+pub(crate) const O_NOFOLLOW: u32 = 0o400000;
+pub(crate) const O_CLOEXEC: u32 = 0o2000000;
 
 // ---------------------------------------------------------------------------------------
 // Time and randomness
@@ -183,6 +183,8 @@ pub enum Kind {
     Dir(String),
     PipeR(Rc<RefCell<Pipe>>),
     PipeW(Rc<RefCell<Pipe>>),
+    Sock(usize),
+    Unix(Rc<RefCell<crate::sock::Unix>>),
 }
 
 /// An open file: shared by the descriptors dup and fork make, like Linux's struct file.
@@ -204,6 +206,7 @@ impl Drop for OpenFile {
         match &self.kind {
             Kind::PipeR(p) => p.borrow_mut().readers -= 1,
             Kind::PipeW(p) => p.borrow_mut().writers -= 1,
+            Kind::Sock(i) => crate::sock::closed(*i),
             _ => return,
         }
         proc::wake_all();
@@ -216,15 +219,15 @@ pub struct Fd {
     pub cloexec: bool,
 }
 
-fn fd_file(fd: u64) -> Result<Rc<RefCell<OpenFile>>, i64> {
+pub(crate) fn fd_file(fd: u64) -> Result<Rc<RefCell<OpenFile>>, i64> {
     current().fds.borrow().get(fd as usize).and_then(|f| f.as_ref()).map(|f| f.file.clone()).ok_or(EBADF)
 }
 
-fn fd_install(file: OpenFile, cloexec: bool) -> Result<i64, i64> {
+pub(crate) fn fd_install(file: OpenFile, cloexec: bool) -> Result<i64, i64> {
     fd_install_rc(Rc::new(RefCell::new(file)), cloexec, 0)
 }
 
-fn fd_install_rc(file: Rc<RefCell<OpenFile>>, cloexec: bool, min: usize) -> Result<i64, i64> {
+pub(crate) fn fd_install_rc(file: Rc<RefCell<OpenFile>>, cloexec: bool, min: usize) -> Result<i64, i64> {
     let table = current().fds.clone();
     let mut fds = table.borrow_mut();
     for (i, slot) in fds.iter_mut().enumerate().skip(min) {
@@ -299,6 +302,7 @@ fn stat_open(buf: u64, f: &OpenFile) -> Result<i64, i64> {
         Kind::File(n) => stat_node(buf, n),
         Kind::Dir(d) => stat_node(buf, &node(d)?),
         Kind::PipeR(_) | Kind::PipeW(_) => put_stat(buf, S_IFIFO | 0o600, 5, 0, 0, 0),
+        Kind::Sock(_) | Kind::Unix(_) => put_stat(buf, 0o140000 | 0o777, 6, 0, 0, 0),
     }
 }
 
@@ -321,7 +325,21 @@ fn open(dirfd: i64, path: u64, flags: u64, mode: u64) -> Result<i64, i64> {
     let follow = flags & O_NOFOLLOW == 0;
     let canon = match at_path(dirfd, &path, follow) {
         Ok(c) => c,
-        Err(ENOENT) if flags & O_CREAT != 0 => at_new_path(dirfd, &path)?,
+        Err(ENOENT) if flags & O_CREAT != 0 => {
+            let mut c = at_new_path(dirfd, &path)?;
+            // a dangling symbolic link: create what it points to, as Linux does
+            let mut hops = 0;
+            while follow && flags & O_EXCL == 0 {
+                let Some(n) = vfs::lookup(&c) else { break };
+                if !n.is_link() || hops > 40 {
+                    break;
+                }
+                hops += 1;
+                let dir = alloc::format!("/{}", c.rsplit_once('/').map(|x| x.0).unwrap_or(""));
+                c = vfs::resolve_parent(&dir, &n.link_target())?;
+            }
+            c
+        }
         Err(e) => return Err(e),
     };
     let cloexec = flags & O_CLOEXEC != 0;
@@ -365,12 +383,15 @@ fn open(dirfd: i64, path: u64, flags: u64, mode: u64) -> Result<i64, i64> {
     fd_install(OpenFile { kind: Kind::File(node), pos: 0, flags, path: disp }, cloexec)
 }
 
-fn nonblock(f: &Rc<RefCell<OpenFile>>) -> bool {
+pub(crate) fn nonblock(f: &Rc<RefCell<OpenFile>>) -> bool {
     f.borrow().flags & O_NONBLOCK != 0
 }
 
 fn read(fd: u64, buf: u64, len: u64) -> Result<i64, i64> {
     let file = fd_file(fd)?;
+    if let Some(r) = crate::sock::read(&file, buf, len) {
+        return r;
+    }
     if file.borrow().flags & O_ACCMODE == 1 {
         return Err(EBADF);
     }
@@ -414,7 +435,7 @@ fn read(fd: u64, buf: u64, len: u64) -> Result<i64, i64> {
                 fill_random(out);
                 return Ok(len as i64);
             }
-            Kind::PipeW(_) => return Err(EBADF),
+            Kind::PipeW(_) | Kind::Sock(_) | Kind::Unix(_) => return Err(EBADF),
         }
         drop(f);
         if nonblock(&file) {
@@ -435,6 +456,9 @@ fn fill_random(out: &mut [u8]) {
 
 fn write(fd: u64, buf: u64, len: u64) -> Result<i64, i64> {
     let file = fd_file(fd)?;
+    if let Some(r) = crate::sock::write(&file, buf, len) {
+        return r;
+    }
     if file.borrow().flags & O_ACCMODE == 0 && !matches!(file.borrow().kind, Kind::Tty | Kind::PipeW(_)) {
         return Err(EBADF);
     }
@@ -464,7 +488,7 @@ fn write(fd: u64, buf: u64, len: u64) -> Result<i64, i64> {
                 f.pos = at + data.len();
                 return Ok(len as i64);
             }
-            Kind::File(Node::Base(_) | Node::Ext(_)) | Kind::Dir(_) | Kind::PipeR(_) => return Err(EBADF),
+            Kind::File(Node::Base(_) | Node::Ext(_)) | Kind::Dir(_) | Kind::PipeR(_) | Kind::Sock(_) | Kind::Unix(_) => return Err(EBADF),
             Kind::PipeW(p) => {
                 let mut p = p.borrow_mut();
                 if p.readers == 0 {
@@ -497,7 +521,7 @@ fn write(fd: u64, buf: u64, len: u64) -> Result<i64, i64> {
     }
 }
 
-fn iovecs(iov: u64, cnt: u64) -> Result<Vec<(u64, u64)>, i64> {
+pub(crate) fn iovecs(iov: u64, cnt: u64) -> Result<Vec<(u64, u64)>, i64> {
     if cnt > 1024 {
         return Err(EINVAL);
     }
@@ -630,6 +654,9 @@ fn sleep_until(ns: u64) -> Result<i64, i64> {
 // poll: is the file ready for reading / writing?
 fn ready(file: &Rc<RefCell<OpenFile>>) -> (bool, bool, bool) {
     let f = file.borrow();
+    if let Some(r) = crate::sock::ready(&f.kind) {
+        return r;
+    }
     match &f.kind {
         Kind::Tty => (tty::readable(), true, false),
         Kind::PipeR(p) => {
@@ -768,6 +795,66 @@ fn kill(pid: i64, sig: u64) -> Result<i64, i64> {
     };
     if !found {
         return Err(ESRCH);
+    }
+    Ok(0)
+}
+
+/// The interface requests of the old ioctl interface (ifconfig and friends): lo and eth0.
+fn net_ioctl(cmd: u64, arg: u64) -> Result<i64, i64> {
+    let (ip, mask, mac, card, up) = crate::net::with(|n| (n.ip, n.mask, n.mac(), n.has_card(), n.link_up()));
+    let put_addr = |at: &mut [u8], fam: u16, a: u32| {
+        at[..16].fill(0);
+        at[0..2].copy_from_slice(&fam.to_le_bytes());
+        at[4..8].copy_from_slice(&a.to_be_bytes());
+    };
+    if cmd == 0x8912 {
+        // SIOCGIFCONF
+        let len = user_slice(arg, 16)?;
+        let room = i32::from_le_bytes(len[0..4].try_into().unwrap()).max(0) as usize;
+        let p = u64::from_le_bytes(len[8..16].try_into().unwrap());
+        let mut list: Vec<(&str, u32)> = alloc::vec![("lo", 0x7F00_0001)];
+        if card && ip != 0 {
+            list.push(("eth0", ip));
+        }
+        let mut used = 0;
+        for (name, a) in list {
+            if used + 40 > room || p == 0 {
+                break;
+            }
+            let r = user_slice(p + used as u64, 40)?;
+            r.fill(0);
+            r[..name.len()].copy_from_slice(name.as_bytes());
+            put_addr(&mut r[16..32], 2, a);
+            used += 40;
+        }
+        user_slice(arg, 4)?.copy_from_slice(&(used as i32).to_le_bytes());
+        return Ok(0);
+    }
+    let r = user_slice(arg, 40)?;
+    let end = r[..16].iter().position(|&c| c == 0).unwrap_or(16);
+    let lo = &r[..end] == b"lo";
+    if !lo && (&r[..end] != b"eth0" || !card) {
+        return Err(ENXIO);
+    }
+    match cmd {
+        0x8913 => {
+            // SIOCGIFFLAGS: UP, BROADCAST/LOOPBACK, RUNNING
+            let f: u16 = if lo { 0x1 | 0x8 | 0x40 } else { 0x1 | 0x2 | 0x1000 | if up { 0x40 } else { 0 } };
+            r[16..18].copy_from_slice(&f.to_le_bytes());
+        }
+        0x8915 => put_addr(&mut r[16..32], 2, if lo { 0x7F00_0001 } else { ip }),
+        0x891B => put_addr(&mut r[16..32], 2, if lo { 0xFF00_0000 } else { mask }),
+        0x8919 => put_addr(&mut r[16..32], 2, if lo { 0 } else { ip | !mask }),
+        0x8927 => {
+            r[16..32].fill(0);
+            r[16..18].copy_from_slice(&(if lo { 772u16 } else { 1 }).to_le_bytes());
+            if !lo {
+                r[18..24].copy_from_slice(&mac);
+            }
+        }
+        0x8921 => r[16..20].copy_from_slice(&(if lo { 65536i32 } else { 1500 }).to_le_bytes()),
+        0x8933 => r[16..20].copy_from_slice(&(if lo { 1i32 } else { 2 }).to_le_bytes()),
+        _ => return Err(EINVAL),
     }
     Ok(0)
 }
@@ -966,10 +1053,38 @@ fn handle(f: &mut SyscallFrame) -> Result<i64, i64> {
             r.to_sys(f);
             Ok(r.r[0] as i64)
         }
-        16 => match &fd_file(a0)?.borrow().kind {
-            Kind::Tty => tty_ioctl(a1, a2),
-            _ => Err(ENOTTY),
-        },
+        16 => {
+            let file = fd_file(a0)?;
+            match a1 {
+                0x5421 => {
+                    // FIONBIO
+                    let on = user_slice(a2, 4)?.iter().any(|&b| b != 0);
+                    let mut fb = file.borrow_mut();
+                    if on { fb.flags |= O_NONBLOCK } else { fb.flags &= !O_NONBLOCK }
+                    return Ok(0);
+                }
+                0x5451 | 0x5450 => return Ok(0), // FIOCLEX, FIONCLEX
+                0x541B => {
+                    // FIONREAD
+                    let fb = file.borrow();
+                    let n = match &fb.kind {
+                        Kind::PipeR(p) => Some(p.borrow().buf.len()),
+                        k => crate::sock::pending(k),
+                    };
+                    if let Some(n) = n {
+                        user_slice(a2, 4)?.copy_from_slice(&(n as i32).to_le_bytes());
+                        return Ok(0);
+                    }
+                }
+                _ => {}
+            }
+            let fb = file.borrow();
+            match &fb.kind {
+                Kind::Tty => tty_ioctl(a1, a2),
+                Kind::Sock(_) | Kind::Unix(_) => net_ioctl(a1, a2),
+                _ => Err(ENOTTY),
+            }
+        }
         17 => {
             // pread64
             let file = fd_file(a0)?;
@@ -1101,7 +1216,22 @@ fn handle(f: &mut SyscallFrame) -> Result<i64, i64> {
             }
             Ok(k as i64)
         }
-        41 => Err(EAFNOSUPPORT), // socket: no network yet
+        41 => crate::sock::socket(a0, a1, a2),
+        42 => crate::sock::connect(a0, a1, a2),
+        43 => crate::sock::accept(a0, a1, a2, 0),
+        288 => crate::sock::accept(a0, a1, a2, a3),
+        44 => crate::sock::send(a0, a1, a2, a3, a4, a5),
+        45 => crate::sock::recvfrom(a0, a1, a2, a3, a4, a5),
+        46 => crate::sock::sendmsg(a0, a1, a2),
+        47 => crate::sock::recvmsg(a0, a1, a2),
+        48 => crate::sock::shutdown(a0, a1),
+        49 => crate::sock::bind(a0, a1, a2),
+        50 => crate::sock::listen(a0, a1),
+        51 => crate::sock::getname(a0, a1, a2, false),
+        52 => crate::sock::getname(a0, a1, a2, true),
+        53 => crate::sock::socketpair(a0, a1, a2, a3),
+        54 => crate::sock::setsockopt(a0, a1, a2, a3, a4),
+        55 => crate::sock::getsockopt(a0, a1, a2, a3, a4),
         56 => proc::clone(f, a0, a1, a2, a3, a4).map(|p| p as i64), // clone(flags, stack, ptid, ctid, tls)
         57 => proc::clone(f, 17, 0, 0, 0, 0).map(|p| p as i64),
         58 => proc::clone(f, proc::CLONE_VM | proc::CLONE_VFORK | 17, 0, 0, 0, 0).map(|p| p as i64),

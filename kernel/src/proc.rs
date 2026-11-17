@@ -195,6 +195,7 @@ fn schedule() {
                 crate::dev::poll_serial();
                 crate::dev::poll_devices();
                 crate::persist::tick();
+                crate::net::idle();
                 arch::wait_for_interrupt();
             }
         }

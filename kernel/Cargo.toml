@@ -4,7 +4,7 @@
 #   kernel/build.sh   -> kernel/target/x86_64-unknown-uefi/release/flint-kernel.efi
 [package]
 name = "flint-kernel"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "The Flint kernel: boots from UEFI and runs Linux x86-64 programs through Linux's system calls"
 license = "MIT"
